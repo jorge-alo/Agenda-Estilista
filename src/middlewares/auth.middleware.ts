@@ -14,7 +14,7 @@ export const authMiddleware = (
     }
 
     try {
-        const decoded = jwt.verify(token, "secreto");
+        const decoded = jwt.verify(token, process.env.JWT_SECRET as string);
         req.user = decoded;
         next();
     } catch {
