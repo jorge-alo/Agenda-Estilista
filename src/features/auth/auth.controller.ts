@@ -1,5 +1,7 @@
 import { Request, Response } from "express";
 import jwt from "jsonwebtoken"
+import dotenv from 'dotenv'
+dotenv.config();
 import * as authService from "./auth.service"
 
 export const register = async (req: Request, res: Response) => {
@@ -46,7 +48,7 @@ export const login = async (req: Request, res: Response) => {
       nombreLocal: user.nombreLocal,
       telefono: user.telefono
     },
-    "secreto", // después lo movemos a .env
+    (process.env.JWT_SECRET as string), // después lo movemos a .env
     { expiresIn: "8h" }
   );
 
