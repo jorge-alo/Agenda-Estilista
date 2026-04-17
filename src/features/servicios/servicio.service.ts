@@ -76,9 +76,11 @@ export const getServiciosByEstilista = async (estilista_id: number) => {
 };
 
 export const deleteServicio = async (id: number) => {
+  const hoy = new Date().toISOString().split("T")[0]; // "2026-04-17"
+
   const [turnos]: any = await pool.query(
-    "SELECT id FROM turnos WHERE servicio_id = ?",
-    [id]
+    "SELECT id FROM turnos WHERE servicio_id = ? AND fecha >= ?",
+    [id, hoy]
   );
 
   if (turnos.length > 0) {
