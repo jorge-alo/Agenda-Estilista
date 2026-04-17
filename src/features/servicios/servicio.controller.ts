@@ -108,6 +108,7 @@ export const removeServicio = async (req: Request, res: Response) => {
 
     res.json({ message: "Servicio eliminado" });
   } catch (error: any) {
+    console.log("Error real:", error.message);
     if (error.message === "Tiene turnos asociados") {
       return res.status(400).json({ error: error.message });
     }
