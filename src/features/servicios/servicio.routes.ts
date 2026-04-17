@@ -13,5 +13,5 @@ ServiciosRouter.get("/admin", authMiddleware, getServiciosByLocalId);
 ServiciosRouter.post("/asignar", asignarServicio);
 ServiciosRouter.delete("/desasignar", desasignarServicio);
 ServiciosRouter.get("/estilista/:id", getServiciosPorEstilista);
-ServiciosRouter.delete("/:id", removeServicio);
+ServiciosRouter.delete("/:id", authMiddleware, removeServicio);
 ServiciosRouter.patch("/:id/toggle", toggleServicio);
