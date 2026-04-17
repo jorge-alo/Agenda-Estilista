@@ -75,17 +75,22 @@ export const getServiciosByEstilista = async (estilista_id: number) => {
   return rows;
 };
 
-export const deleteServicio = async (id: number) => {
+export const deleteServicio = async (id: number, localId: number) => {
   const hoy = new Date().toISOString().split("T")[0]; // "2026-04-17"
 
   const [turnos]: any = await pool.query(
-    "SELECT id FROM turnos WHERE servicio_id = ? AND fecha >= ? AND estado = 'activo'",
-    [id, hoy]
+    "SELECT id FROM turnos WHERE servicio_id = ? AND fecha >= ? AND estado = 'activo' AND local_id = ?",
+    [id, hoy, localId]
   );
 
   if (turnos.length > 0) {
     throw new Error("Tiene turnos asociados");
   }
+
+   await pool.query(
+    "UPDATE turnos SET servicio_id = NULL WHERE servicio_id = ? AND local_id = ?",
+    [id, localId]
+  );
 
   await pool.query(
     "DELETE FROM estilista_servicios WHERE servicio_id = ?",

@@ -100,19 +100,22 @@ export const getServiciosPorEstilista = async (req: Request, res: Response) => {
   }
 };
 
-export const removeServicio = async (req: Request, res: Response) => {
-  try {
+export const removeServicio = async (req: AuthRequest, res: Response) => {
+    try {
     const { id } = req.params;
+    const localId = req.user?.localId;
 
-    await servicioService.deleteServicio(Number(id));
+    if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
 
+    await servicioService.deleteServicio(Number(id), localId);
     res.json({ message: "Servicio eliminado" });
   } catch (error: any) {
     console.log("Error real:", error.message);
     if (error.message === "Tiene turnos asociados") {
       return res.status(400).json({ error: error.message });
     }
-
     res.status(500).json({ error: "Error eliminando servicio" });
   }
 };
