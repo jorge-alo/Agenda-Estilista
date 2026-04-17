@@ -185,6 +185,13 @@ export const getDisponibilidad = async (
   for (const horaInicio of horarios) {
     const horaFin = sumarMinutos(horaInicio, duracion);
 
+    // 🔥 NUEVO: verificar que el turno entre dentro del horario del estilista
+    const dentroDelHorario = horariosDB.some(
+      (h: any) => horaInicio >= h.hora_inicio && horaFin <= h.hora_fin
+    );
+
+    if (!dentroDelHorario) continue; // ← descartamos este slot
+
     let solapado = false;
 
     for (const turno of turnos) {
