@@ -79,7 +79,7 @@ export const deleteServicio = async (id: number) => {
   const hoy = new Date().toISOString().split("T")[0]; // "2026-04-17"
 
   const [turnos]: any = await pool.query(
-    "SELECT id FROM turnos WHERE servicio_id = ? AND fecha >= ?",
+    "SELECT id FROM turnos WHERE servicio_id = ? AND fecha >= ? AND estado = 'activo'",
     [id, hoy]
   );
 
