@@ -8,7 +8,7 @@ export interface AuthRequest extends Request {
 
 export const AuthRouter = Router();
 
-AuthRouter.post("/register", authMiddleware, register);
+AuthRouter.post("/register", register);
 AuthRouter.post("/login",  login);
 AuthRouter.get("/me", authMiddleware,  (req: AuthRequest, res: Response) => {
     const nombreLocal = req.user.nombreLocal
