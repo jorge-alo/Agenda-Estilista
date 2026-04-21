@@ -30,7 +30,7 @@ export const registerUser = async (
 
     // 🏪 crear local
     const [localResult]: any = await connection.query(
-      "INSERT INTO locales (nombre, slug, telefono) VALUES (?, ?)",
+      "INSERT INTO locales (nombre, slug, telefono) VALUES (?, ?, ?)",
       [nombreLocal, slug, telefono]
     );
 
