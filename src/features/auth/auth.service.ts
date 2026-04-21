@@ -67,6 +67,12 @@ export const loginUser = async (email: string, password: string) => {
 
   const isMatch = await bcrypt.compare(password, user.password);
   if (!isMatch) throw new Error("Contraseña incorrecta");
+
+  // Si es superadmin no tiene local
+  if (user.rol === 'superadmin') {
+    return { user, nombreLocal: null, telefono: null };
+  }
+
   const [rowsLocal]: any = await pool.query(
     "SELECT nombre, telefono FROM locales WHERE id = ?",
     [user.local_id]
@@ -74,5 +80,5 @@ export const loginUser = async (email: string, password: string) => {
   console.log("Valor de rowsLocal", rowsLocal[0].nombre)
   const nombreLocal = rowsLocal[0].nombre
   const telefono = rowsLocal[0]?.telefono;
-  return {user, nombreLocal, telefono};
+  return { user, nombreLocal, telefono };
 };
