@@ -6,6 +6,7 @@ import { TurnosRouter } from "./features/turnos/turnos.routes";
 import { PublicRouter } from "./features/public/public.routes";
 import {  ServiciosRouter } from "./features/servicios/servicio.routes";
 import { HorariosRouter } from "./features/horarios/horarios.routes";
+import routerSuperAdmin from "./features/superAdmin/superadmin.routes";
 
 const app = express();
 
@@ -18,6 +19,7 @@ app.use("/api/turnos", TurnosRouter);
 app.use("/api/public", PublicRouter);
 app.use("/api/servicios", ServiciosRouter);
 app.use("/api/horarios", HorariosRouter);
+app.use("/api/superAdmin", routerSuperAdmin);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
