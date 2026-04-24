@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import * as turnoService from "../public/public.service";
+import { sendTurnoConfirmado } from "../notifications/application/sendWhatsAppNotification";
 
 export const reservar = async (req: Request, res: Response) => {
   try {
@@ -22,6 +23,22 @@ export const reservar = async (req: Request, res: Response) => {
       cliente_nombre,
       cliente_telefono,
     });
+
+    try {
+      await sendTurnoConfirmado({
+        clienteNombre: cliente_nombre,
+        clienteTelefono: cliente_telefono,
+        fecha,
+        hora,
+        servicio: turno.servicioNombre,
+        localNombre: turno.localNombre,
+        localTelefono: turno.telefono,
+      });
+    } catch (err) {
+      console.error("Error enviando WhatsApp:", err);
+    }
+
+
 
     res.json({ message: "Turno reservado", telefono: turno.telefono });
   } catch (error: any) {

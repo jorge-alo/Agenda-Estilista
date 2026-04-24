@@ -14,26 +14,26 @@ export const createTurnoPublico = async (data: any) => {
 
   // 🔎 1. buscar local
   const [localRows]: any = await pool.query(
-    "SELECT id, telefono FROM locales WHERE slug = ?",
+    "SELECT id, telefono, nombre FROM locales WHERE slug = ?",
     [slug]
   );
 
   if (localRows.length === 0) {
     throw new Error("Local no encontrado");
   }
-
+  const localNombre = localRows[0].nombre;
   const localId = localRows[0].id;
   const telefono = localRows[0].telefono
   // 🔥 2. obtener duración del servicio
   const [servicioRows]: any = await pool.query(
-    "SELECT duracion FROM servicios WHERE id = ?",
+    "SELECT duracion, nombre FROM servicios WHERE id = ?",
     [servicio_id]
   );
 
   if (servicioRows.length === 0) {
     throw new Error("Servicio no encontrado");
   }
-
+  const servicioNombre = servicioRows[0].nombre;
   const duracion = servicioRows[0].duracion;
 
   // 🧠 3. calcular hora_fin
@@ -71,5 +71,10 @@ export const createTurnoPublico = async (data: any) => {
     ]
   );
 
-  return {id: result.insertId, telefono };
+  return {
+    id: result.insertId,
+    telefono,
+    localNombre,
+    servicioNombre,
+  };
 };
