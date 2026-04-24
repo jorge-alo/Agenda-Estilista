@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import * as turnoService from "../public/public.service";
 import { sendTurnoConfirmado } from "../notifications/application/sendWhatsAppNotification";
+import { formatPhoneAR } from "../../helpers/formatPhoneAR";
 
 export const reservar = async (req: Request, res: Response) => {
   try {
@@ -24,10 +25,12 @@ export const reservar = async (req: Request, res: Response) => {
       cliente_telefono,
     });
 
+    const telefonoFormateado = formatPhoneAR(cliente_telefono);
+
     try {
       await sendTurnoConfirmado({
         clienteNombre: cliente_nombre,
-        clienteTelefono: cliente_telefono,
+        clienteTelefono: telefonoFormateado,
         fecha,
         hora,
         servicio: turno.servicioNombre,
