@@ -36,6 +36,7 @@ export const reservar = async (req: Request, res: Response) => {
         servicio: turno.servicioNombre,
         localNombre: turno.localNombre,
         localTelefono: turno.telefono,
+         localId: String(turno.localId)
       });
     } catch (err) {
       console.error("Error enviando WhatsApp:", err);

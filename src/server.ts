@@ -7,6 +7,8 @@ import { PublicRouter } from "./features/public/public.routes";
 import {  ServiciosRouter } from "./features/servicios/servicio.routes";
 import { HorariosRouter } from "./features/horarios/horarios.routes";
 import routerSuperAdmin from "./features/superAdmin/superadmin.routes";
+import { WhatsAppRouter } from "./features/notifications/whatsapp.routes";
+import { iniciarCronRecordatorios } from "./features/cron/recordatorios.cron";
 
 const app = express();
 
@@ -20,8 +22,10 @@ app.use("/api/public", PublicRouter);
 app.use("/api/servicios", ServiciosRouter);
 app.use("/api/horarios", HorariosRouter);
 app.use("/api/superAdmin", routerSuperAdmin);
+app.use("/api/whatsapp", WhatsAppRouter);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("🚀 Server corriendo en puerto", PORT);
+   iniciarCronRecordatorios();
 });

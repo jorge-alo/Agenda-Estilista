@@ -1,21 +1,22 @@
-import { twilioClient } from "./twilio.client";
+// src/features/notifications/infrastructure/whatsapp.provider.ts
+import { evolutionClient } from "./evolution.client";
 
-const FROM = process.env.TWILIO_WHATSAPP_NUMBER!;
-
-export const sendWhatsApp = async (to: string, body: string) => {
-    try {
-        console.log("ACCOUNT SID:", process.env.TWILIO_ACCOUNT_SID);
-        console.log("FROM:", process.env.TWILIO_WHATSAPP_NUMBER);
-        console.log("TO:", to);
-        const message = await twilioClient.messages.create({
-            from: FROM,
-            to: `whatsapp:+${to}`,
-            body,
-        });
-        console.log("SID:", message.sid);
-        console.log("STATUS:", message.status);
-    } catch (error) {
-        console.error("Error enviando WhatsApp:", error);
-        throw error;
-    }
+export const sendWhatsApp = async (
+  to: string,
+  body: string,
+  localId: string
+): Promise<void> => {
+  try {
+    await evolutionClient.post(`/message/sendText/${localId}`, {
+      number: to,
+      textMessage: { text: body },
+    });
+    console.log(`✅ WhatsApp enviado a ${to} desde instancia ${localId}`);
+  } catch (error: any) {
+    console.error(
+      `❌ Error enviando WhatsApp a ${to}:`,
+      error.response?.data || error.message
+    );
+    throw error;
+  }
 };

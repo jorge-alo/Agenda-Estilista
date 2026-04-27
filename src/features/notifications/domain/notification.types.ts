@@ -6,4 +6,5 @@ export interface TurnoNotificationData {
   servicio: string;
   localNombre: string;
   localTelefono: string;
+   localId: string;
 }
