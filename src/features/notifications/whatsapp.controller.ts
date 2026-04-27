@@ -24,9 +24,8 @@ export const conectarWhatsApp = async (req: Request, res: Response) => {
 
   try {
     const { data } = await evolutionClient.get(
-      `/instance/qrcode/${localId}`,
-      { params: { image: true } }
-    );
+  `/instance/connect/${localId}`
+);
     return res.json({ qr: data.base64 });
   } catch (error: any) {
     console.log("❌ Error obteniendo QR:", error.response?.data);
