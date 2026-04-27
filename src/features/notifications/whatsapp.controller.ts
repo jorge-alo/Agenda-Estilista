@@ -5,36 +5,29 @@ import { evolutionClient } from "./infrastructure/evolution.client";
 // Crea la instancia y devuelve el QR
 export const conectarWhatsApp = async (req: Request, res: Response) => {
   const { localId } = req.params;
-  console.log("🔍 Conectar WhatsApp para localId:", localId);
-  console.log("🔍 EVOLUTION_URL:", process.env.EVOLUTION_API_URL);
-  console.log("🔍 EVOLUTION_KEY:", process.env.EVOLUTION_API_KEY);
+
   try {
-    // Intentar crear la instancia
     await evolutionClient.post("/instance/create", {
       instanceName: String(localId),
       qrcode: true,
     });
   } catch (error: any) {
-    console.log("⚠️ Error creando instancia:", error.response?.data);
-    // Si ya existe la instancia no es un error, seguimos
-    const yaExiste = error.response?.data?.message
-      ?.toLowerCase()
-      .includes("already");
+    const mensaje = error.response?.data?.response?.message?.[0] || "";
+    const yaExiste = mensaje.toLowerCase().includes("already in use");
     if (!yaExiste) {
+      console.log("❌ Error creando instancia:", error.response?.data);
       return res.status(500).json({ error: "Error creando instancia" });
     }
+    // Si ya existe, continuamos a obtener el QR
+    console.log("⚠️ Instancia ya existe, obteniendo QR...");
   }
 
   try {
-    // Obtener el QR
     const { data } = await evolutionClient.get(
       `/instance/qrcode/${localId}`,
       { params: { image: true } }
     );
-    console.log("✅ QR obtenido:", data);
-    return res.json({
-      qr: data.base64, // base64 que el frontend renderiza como imagen
-    });
+    return res.json({ qr: data.base64 });
   } catch (error: any) {
     console.log("❌ Error obteniendo QR:", error.response?.data);
     return res.status(500).json({ error: "Error obteniendo QR" });
