@@ -21,13 +21,7 @@ Tu turno en *${localNombre}* fue confirmado:
 
 📅 Fecha: ${fecha}
 ⏰ Hora: ${hora}
-💇 Servicio: ${servicio}
-
-📲 Contactar al local:
-https://wa.me/${localTelefono}
-
-(Este es un mensaje automático, no responder aquí)
-`;
+💇 Servicio: ${servicio}`;
 };
 
 export const buildTurnoRecordatorioMessage = (
@@ -46,8 +40,6 @@ Te recordamos que mañana tenés turno en *${localNombre}*:
 ⏰ Hora: ${hora}
 💇 Servicio: ${servicio}
 
-Si no podés asistir, avisanos:
-https://wa.me/${localTelefono}
-
-_(Mensaje automático, no respondas aquí)_`;
+Si no podés asistir, avisanos
+`;
 };
