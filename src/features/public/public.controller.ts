@@ -31,7 +31,7 @@ export const reservar = async (req: Request, res: Response) => {
       await sendTurnoConfirmado({
         clienteNombre: cliente_nombre,
         clienteTelefono: telefonoFormateado,
-        fecha,
+        fecha: new Date(fecha + "T00:00:00").toLocaleDateString("es-AR"),
         hora,
         servicio: turno.servicioNombre,
         localNombre: turno.localNombre,
