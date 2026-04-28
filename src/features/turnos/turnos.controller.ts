@@ -168,3 +168,28 @@ export const createAdmin = async (req: AuthRequest, res: Response) => {
         res.status(400).json({ error: error.message });
     }
 };
+
+export const getByRangoAdmin = async (req: AuthRequest, res: Response) => {
+  try {
+    const localId = req.user?.localId;
+    if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const { desde, hasta } = req.query;
+
+    if (!desde || !hasta) {
+      return res.status(400).json({ error: "Parámetros desde y hasta requeridos" });
+    }
+
+    const turnos = await turnoService.getTurnosByRango(
+      desde as string,
+      hasta as string,
+      localId
+    );
+
+    res.json(turnos);
+  } catch (error) {
+    res.status(500).json({ error: "Error al obtener turnos" });
+  }
+};

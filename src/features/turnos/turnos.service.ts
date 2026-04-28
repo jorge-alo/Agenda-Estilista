@@ -392,3 +392,22 @@ export const reprogramarTurno = async (data: any) => {
 
   return result.insertId;
 };
+
+export const getTurnosByRango = async (desde: string, hasta: string, localId: number) => {
+  const [rows]: any = await pool.query(
+    `SELECT 
+        t.*, 
+        e.nombre as estilista_nombre,
+        s.nombre as servicio_nombre
+     FROM turnos t
+     JOIN estilistas e ON t.estilista_id = e.id
+     JOIN servicios s ON t.servicio_id = s.id
+     WHERE t.local_id = ?
+       AND t.fecha BETWEEN ? AND ?
+       AND t.estado != 'cancelado'
+     ORDER BY t.fecha ASC, t.hora ASC`,
+    [localId, desde, hasta]
+  );
+
+  return rows;
+};
