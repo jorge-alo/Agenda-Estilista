@@ -25,7 +25,9 @@ export const reservar = async (req: Request, res: Response) => {
       cliente_telefono,
     });
 
+
     const telefonoFormateado = formatPhoneAR(cliente_telefono);
+    const telefonoLocalFormateado = formatPhoneAR(turno.telefono);
 
     try {
       await sendTurnoConfirmado({
@@ -35,7 +37,7 @@ export const reservar = async (req: Request, res: Response) => {
         hora,
         servicio: turno.servicioNombre,
         localNombre: turno.localNombre,
-        localTelefono: turno.telefono,
+        localTelefono: telefonoLocalFormateado,
          localId: String(turno.localId)
       });
     } catch (err) {

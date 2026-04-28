@@ -24,6 +24,8 @@ export const createTurnoPublico = async (data: any) => {
   const localNombre = localRows[0].nombre;
   const localId = localRows[0].id;
   const telefono = localRows[0].telefono
+
+  console.log('PHONE:', telefono);
   // 🔥 2. obtener duración del servicio
   const [servicioRows]: any = await pool.query(
     "SELECT duracion, nombre FROM servicios WHERE id = ?",
