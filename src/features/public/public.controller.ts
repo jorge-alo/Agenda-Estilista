@@ -46,7 +46,7 @@ export const reservar = async (req: Request, res: Response) => {
 
 
 
-    res.json({ message: "Turno reservado", telefono: turno.telefono });
+    res.json({ message: "Turno reservado", telefono: telefonoLocalFormateado });
   } catch (error: any) {
     res.status(400).json({ error: error.message });
   }
