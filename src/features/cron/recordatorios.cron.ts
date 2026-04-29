@@ -3,6 +3,7 @@ import cron from "node-cron";
 import { pool } from "../../config/db";
 import { sendWhatsApp } from "../notifications/infrastructure/whatsapp.provider";
 import { buildTurnoRecordatorioMessage } from "../notifications/application/notification.service";
+import { formatPhoneAR } from "../../helpers/formatPhoneAR";
 
 export const iniciarCronRecordatorios = () => {
   // Se ejecuta todos los días a las 10:00 AM hora Argentina
@@ -52,8 +53,10 @@ export const iniciarCronRecordatorios = () => {
               localId: String(turno.local_id),
             });
 
+            const telefonoCliente = formatPhoneAR(turno.cliente_telefono);
+
             await sendWhatsApp(
-              turno.cliente_telefono,
+              telefonoCliente,
               message,
               String(turno.local_id)
             );
