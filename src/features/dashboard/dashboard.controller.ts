@@ -1,6 +1,8 @@
 import { Request, Response } from "express";
 
 import {
+    getHistorialClientesService,
+    getReporteMensualService,
     getResumenDiaService
 } from "./dashboard.service";
 
@@ -50,3 +52,74 @@ export const getResumenDiaController =
             });
         }
     };
+
+export const getHistorialClientesController =
+  async (
+    req: AuthRequest,
+    res: Response
+  ) => {
+
+    try {
+
+      const localId = req.user?.localId;
+
+      if (!localId) {
+
+        return res.status(401).json({
+          error: "No autorizado"
+        });
+      }
+
+      const data =
+        await getHistorialClientesService(
+          localId
+        );
+
+      res.json(data);
+
+    } catch (error) {
+
+      console.error(error);
+
+      res.status(500).json({
+        error:
+          "Error al obtener clientes"
+      });
+    }
+  };
+
+  export const getReporteMensualController =
+  async (
+    req: AuthRequest,
+    res: Response
+  ) => {
+
+    try {
+
+      const localId =
+        req.user?.localId;
+
+      if (!localId) {
+
+        return res.status(401).json({
+          error: "No autorizado"
+        });
+      }
+
+      const data =
+        await getReporteMensualService(
+          localId
+        );
+
+      res.json(data);
+
+    } catch (error) {
+
+      console.error(error);
+
+      res.status(500).json({
+        error:
+          "Error reporte mensual"
+      });
+    }
+  };
