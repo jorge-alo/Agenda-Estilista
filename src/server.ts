@@ -9,6 +9,7 @@ import { HorariosRouter } from "./features/horarios/horarios.routes";
 import routerSuperAdmin from "./features/superAdmin/superadmin.routes";
 import { WhatsAppRouter } from "./features/notifications/whatsapp.routes";
 import { iniciarCronRecordatorios } from "./features/cron/recordatorios.cron";
+import dashboardRouter from "./features/dashboard/dashboard.routes";
 
 const app = express();
 
@@ -23,6 +24,8 @@ app.use("/api/servicios", ServiciosRouter);
 app.use("/api/horarios", HorariosRouter);
 app.use("/api/superAdmin", routerSuperAdmin);
 app.use("/api/whatsapp", WhatsAppRouter);
+app.use("/api/dashboard", dashboardRouter);
+
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

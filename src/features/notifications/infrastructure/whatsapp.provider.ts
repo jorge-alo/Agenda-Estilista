@@ -9,7 +9,9 @@ export const sendWhatsApp = async (
   try {
     await evolutionClient.post(`/message/sendText/${localId}`, {
       number: to,
-      text: body,
+      textMessage: {
+        text: body,
+      },
     });
     console.log(`✅ WhatsApp enviado a ${to} desde instancia ${localId}`);
   } catch (error: any) {
