@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 
 import {
   crearBloqueoService,
+  eliminarBloqueo,
   obtenerBloqueosService
 } from "./bloqueos.service";
 
@@ -69,17 +70,11 @@ export const obtenerBloqueosController =
 
     try {
 
-      const localId = req.user?.localId;
+      const localId =
+        req.user!.localId;
 
-      if (!localId) {
-        return res
-          .status(401)
-          .json({
-            error: "No autorizado"
-          });
-      }
-
-      const fecha = req.query.fecha as string;
+      const fecha =
+        req.query.fecha as string;
 
       const bloqueos =
         await obtenerBloqueosService(
@@ -91,10 +86,32 @@ export const obtenerBloqueosController =
 
     } catch (error) {
 
-      console.error(error);
-
       res.status(500).json({
         error: "Error obteniendo bloqueos"
       });
+
+    }
+  };
+
+  export const eliminarBloqueoController =
+  async (req: Request, res: Response) => {
+
+    try {
+
+      const id =
+        Number(req.params.id);
+
+      await eliminarBloqueo(id);
+
+      res.json({
+        ok: true
+      });
+
+    } catch (error) {
+
+      res.status(500).json({
+        error: "Error eliminando bloqueo"
+      });
+
     }
   };

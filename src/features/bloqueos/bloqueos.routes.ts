@@ -5,6 +5,7 @@ import { authMiddleware }
 
 import {
   crearBloqueoController,
+  eliminarBloqueoController,
   obtenerBloqueosController
 } from "./bloqueos.controller";
 
@@ -22,4 +23,9 @@ bloqueosRouter.get(
   obtenerBloqueosController
 );
 
+bloqueosRouter.delete(
+  "/:id",
+  authMiddleware,
+  eliminarBloqueoController
+);
 export default bloqueosRouter;

@@ -43,18 +43,54 @@ export const crearBloqueoService =
 export const obtenerBloqueosService =
   async (
     localId: number,
-    fecha: string
+    fecha?: string
   ) => {
 
-    const [rows] = await pool.query(
-      `
-      SELECT *
-      FROM bloqueos_horarios
-      WHERE local_id = ?
-      AND fecha = ?
-      `,
-      [localId, fecha]
-    );
+    let query = `
+      SELECT
+        b.id,
+        b.fecha,
+        b.hora_inicio,
+        b.hora_fin,
+        b.motivo,
+        e.nombre AS estilista_nombre
+
+      FROM bloqueos_horarios b
+
+      JOIN estilistas e
+        ON e.id = b.estilista_id
+
+      WHERE b.local_id = ?
+    `;
+
+    const params: any[] = [localId];
+
+    // 🔍 filtro opcional por fecha
+    if (fecha) {
+      query += ` AND b.fecha = ?`;
+      params.push(fecha);
+    }
+
+    query += `
+      ORDER BY
+        b.fecha ASC,
+        b.hora_inicio ASC
+    `;
+
+    const [rows] =
+      await pool.query(query, params);
 
     return rows;
+  };
+
+  export const eliminarBloqueo =
+  async (id: number) => {
+
+    await pool.query(
+      `
+      DELETE FROM bloqueos_horarios
+      WHERE id = ?
+      `,
+      [id]
+    );
   };

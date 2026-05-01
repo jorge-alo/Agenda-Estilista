@@ -117,6 +117,35 @@ export const getDisponibilidad = async (
   const localId = localRows[0].id;
   const nombreLocal = localRows[0].nombre
 
+  const [diaCompleto]: any =
+    await pool.query(
+      `
+    SELECT id
+    FROM bloqueos_horarios
+    WHERE fecha = ?
+    AND local_id = ?
+    AND estilista_id = ?
+    AND es_dia_completo = true
+    LIMIT 1
+    `,
+      [
+        fecha,
+        localId,
+        estilistaId
+      ]
+    );
+
+  if (diaCompleto.length > 0) {
+
+    return {
+      disponibles: [],
+      ocupados: [],
+      duracion: 0,
+      nombreLocal,
+      bloqueado: true
+    };
+  }
+
   if (!estilistaId || !servicio_id || isNaN(estilistaId) || isNaN(servicio_id)) {
     return {
       disponibles: [],
@@ -316,6 +345,17 @@ export const getDisponibilidadAdmin = async (
     [fecha, localId, estilistaId]
   );
 
+  const [bloqueos]: any = await pool.query(
+    `
+  SELECT hora_inicio, hora_fin
+  FROM bloqueos_horarios
+  WHERE fecha = ?
+  AND local_id = ?
+  AND estilista_id = ?
+  `,
+    [fecha, localId, estilistaId]
+  );
+
   // 💇 4. Duración del servicio
   const [servicioRows]: any = await pool.query(
     "SELECT duracion FROM servicios WHERE id = ?",
@@ -352,6 +392,27 @@ export const getDisponibilidadAdmin = async (
     for (const turno of turnos) {
       if (horaInicio < turno.hora_fin && horaFin > turno.hora) {
         solapado = true;
+        break;
+      }
+    }
+
+    // 🔒 Verificar bloqueos manuales
+    for (const bloqueo of bloqueos) {
+
+      const bloqueoInicio =
+        bloqueo.hora_inicio;
+
+      const bloqueoFin =
+        bloqueo.hora_fin;
+
+      const hayConflictoBloqueo =
+        horaInicio < bloqueoFin &&
+        horaFin > bloqueoInicio;
+
+      if (hayConflictoBloqueo) {
+
+        solapado = true;
+
         break;
       }
     }
