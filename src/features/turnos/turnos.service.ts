@@ -2,7 +2,9 @@ import { pool } from "../../config/db";
 import { generarHorarios } from "../../helpers/generarHorarios";
 import { sumarMinutos } from "../../helpers/sumarMinutos"
 
+
 export const createTurno = async (data: any) => {
+
   const {
     fecha,
     hora,
@@ -15,7 +17,11 @@ export const createTurno = async (data: any) => {
 
   // 🔍 1. Obtener duración del servicio
   const [servicioRows]: any = await pool.query(
-    "SELECT duracion FROM servicios WHERE id = ?",
+    `
+    SELECT duracion
+    FROM servicios
+    WHERE id = ?
+    `,
     [servicio_id]
   );
 
@@ -28,27 +34,90 @@ export const createTurno = async (data: any) => {
   // 🧠 2. Calcular hora_fin
   const hora_fin = sumarMinutos(hora, duracion);
 
-  // 🚫 3. Validar solapamiento REAL (nivel pro)
+  // 🚫 3. Validar solapamiento
   const [rows]: any = await pool.query(
-    `SELECT id FROM turnos 
-     WHERE estilista_id = ?
-     AND fecha = ?
-     AND estado != 'cancelado'
-     AND (
-       (? < hora_fin) AND (? > hora)
-     )`,
-    [estilista_id, fecha, hora, hora_fin]
+    `
+    SELECT id
+    FROM turnos
+    WHERE estilista_id = ?
+    AND fecha = ?
+    AND estado != 'cancelado'
+    AND (
+      (? < hora_fin)
+      AND
+      (? > hora)
+    )
+    `,
+    [
+      estilista_id,
+      fecha,
+      hora,
+      hora_fin
+    ]
   );
 
   if (rows.length > 0) {
     throw new Error("Ese horario ya está ocupado");
   }
 
-  // 💾 4. Insertar turno
+  // 👤 4. Buscar cliente existente
+  const [clientes]: any = await pool.query(
+    `
+    SELECT id
+    FROM clientes
+    WHERE telefono = ?
+    AND local_id = ?
+    `,
+    [
+      cliente_telefono,
+      local_id
+    ]
+  );
+
+  let clienteId;
+
+  // 👤 5. Crear cliente si no existe
+  if (clientes.length > 0) {
+
+    clienteId = clientes[0].id;
+
+  } else {
+
+    const [clienteResult]: any = await pool.query(
+      `
+      INSERT INTO clientes (
+        nombre,
+        telefono,
+        local_id
+      )
+      VALUES (?, ?, ?)
+      `,
+      [
+        cliente_nombre,
+        cliente_telefono,
+        local_id
+      ]
+    );
+
+    clienteId = clienteResult.insertId;
+  }
+
+  // 💾 6. Insertar turno
   const [result]: any = await pool.query(
-    `INSERT INTO turnos 
-    (fecha, hora, hora_fin, estilista_id, servicio_id, local_id, cliente_nombre, cliente_telefono)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `
+    INSERT INTO turnos (
+      fecha,
+      hora,
+      hora_fin,
+      estilista_id,
+      servicio_id,
+      local_id,
+      cliente_nombre,
+      cliente_telefono,
+      cliente_id
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
     [
       fecha,
       hora,
@@ -58,6 +127,7 @@ export const createTurno = async (data: any) => {
       local_id,
       cliente_nombre,
       cliente_telefono,
+      clienteId
     ]
   );
 
