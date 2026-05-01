@@ -15,6 +15,7 @@ export const createTurno = async (data: any) => {
     cliente_telefono,
   } = data;
 
+
   // 🔍 1. Obtener duración del servicio
   const [servicioRows]: any = await pool.query(
     `
@@ -74,6 +75,7 @@ export const createTurno = async (data: any) => {
     ]
   );
 
+
   let clienteId;
 
   // 👤 5. Crear cliente si no existe
@@ -101,6 +103,7 @@ export const createTurno = async (data: any) => {
 
     clienteId = clienteResult.insertId;
   }
+
 
   // 💾 6. Insertar turno
   const [result]: any = await pool.query(
