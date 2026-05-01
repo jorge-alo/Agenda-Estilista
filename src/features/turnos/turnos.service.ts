@@ -159,6 +159,17 @@ export const getDisponibilidad = async (
     [fecha, localId, estilistaId]
   );
 
+  const [bloqueos]: any = await pool.query(
+    `
+  SELECT hora_inicio, hora_fin
+  FROM bloqueos_horarios
+  WHERE fecha = ?
+  AND local_id = ?
+  AND estilista_id = ?
+  `,
+    [fecha, localId, estilistaId]
+  );
+
   // 💇 5. Duración del servicio
   const [servicioRows]: any = await pool.query(
     "SELECT duracion FROM servicios WHERE id = ?",
@@ -202,6 +213,22 @@ export const getDisponibilidad = async (
         horaInicio < ocupadoFin && horaFin > ocupadoInicio;
 
       if (hayConflicto) {
+        solapado = true;
+        break;
+      }
+    }
+
+    // 🔒 Verificar bloqueos manuales
+    for (const bloqueo of bloqueos) {
+
+      const bloqueoInicio = bloqueo.hora_inicio;
+      const bloqueoFin = bloqueo.hora_fin;
+
+      const hayConflictoBloqueo =
+        horaInicio < bloqueoFin &&
+        horaFin > bloqueoInicio;
+
+      if (hayConflictoBloqueo) {
         solapado = true;
         break;
       }
