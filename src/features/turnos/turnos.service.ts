@@ -179,7 +179,7 @@ export const getDisponibilidad = async (
 ) => {
   // 🔍 1. Obtener local
   const [localRows]: any = await pool.query(
-    "SELECT id, nombre FROM locales WHERE slug = ?",
+    "SELECT id, nombre, descripcion, direccion, telefono, horario_apertura, horario_cierre FROM locales WHERE slug = ?",
     [slug]
   );
 
@@ -195,7 +195,12 @@ export const getDisponibilidad = async (
       disponibles: [],
       ocupados: [],
       duracion: 0,
-      nombreLocal // <--- Esto es lo que el frontend necesita para el h1
+      nombreLocal: localRows[0].nombre,
+      descripcion: localRows[0].descripcion,
+      direccion: localRows[0].direccion,
+      telefono: localRows[0].telefono,
+      horario_apertura: localRows[0].horario_apertura,
+      horario_cierre: localRows[0].horario_cierre,
     };
   }
 
@@ -223,12 +228,17 @@ export const getDisponibilidad = async (
       disponibles: [],
       ocupados: [],
       duracion: 0,
-      nombreLocal,
+      nombreLocal: localRows[0].nombre,
+      descripcion: localRows[0].descripcion,
+      direccion: localRows[0].direccion,
+      telefono: localRows[0].telefono,
+      horario_apertura: localRows[0].horario_apertura,
+      horario_cierre: localRows[0].horario_cierre,
       bloqueado: true
     };
   }
 
-  
+
   // 📅 2. Día de la semana
   const getDiaSemanaDB = (fecha: string) => {
     const [year, month, day] = fecha.split("-").map(Number);
@@ -347,7 +357,12 @@ export const getDisponibilidad = async (
     disponibles,
     ocupados: turnos.map((t: any) => t.hora),
     duracion,
-    nombreLocal
+    nombreLocal: localRows[0].nombre,
+    descripcion: localRows[0].descripcion,
+    direccion: localRows[0].direccion,
+    telefono: localRows[0].telefono,
+    horario_apertura: localRows[0].horario_apertura,
+    horario_cierre: localRows[0].horario_cierre,
   };
 };
 
