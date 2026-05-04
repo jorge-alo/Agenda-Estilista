@@ -190,6 +190,15 @@ export const getDisponibilidad = async (
   const localId = localRows[0].id;
   const nombreLocal = localRows[0].nombre
 
+  if (!estilistaId || !servicio_id || isNaN(estilistaId) || isNaN(servicio_id)) {
+    return {
+      disponibles: [],
+      ocupados: [],
+      duracion: 0,
+      nombreLocal // <--- Esto es lo que el frontend necesita para el h1
+    };
+  }
+
   const [diaCompleto]: any =
     await pool.query(
       `
@@ -219,14 +228,7 @@ export const getDisponibilidad = async (
     };
   }
 
-  if (!estilistaId || !servicio_id || isNaN(estilistaId) || isNaN(servicio_id)) {
-    return {
-      disponibles: [],
-      ocupados: [],
-      duracion: 0,
-      nombreLocal // <--- Esto es lo que el frontend necesita para el h1
-    };
-  }
+  
   // 📅 2. Día de la semana
   const getDiaSemanaDB = (fecha: string) => {
     const [year, month, day] = fecha.split("-").map(Number);

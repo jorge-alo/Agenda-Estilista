@@ -12,6 +12,7 @@ import { iniciarCronRecordatorios } from "./features/cron/recordatorios.cron";
 import dashboardRouter from "./features/dashboard/dashboard.routes";
 import bloqueosRouter from "./features/bloqueos/bloqueos.routes";
 import clientesRouter from "./features/clientes/clientes.routes";
+import routerConfiguracion from "./features/configuracion/configuracion.routes";
 
 const app = express();
 
@@ -29,6 +30,7 @@ app.use("/api/whatsapp", WhatsAppRouter);
 app.use("/api/dashboard", dashboardRouter);
 app.use("/api/bloqueos", bloqueosRouter);
 app.use("/api/clientes", clientesRouter);
+app.use("/api/configuracion", routerConfiguracion);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
