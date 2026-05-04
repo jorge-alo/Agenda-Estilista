@@ -18,6 +18,7 @@ export const getDisponibilidad = async (slug: string, fecha: string, servicio_id
      WHERE fecha = ? AND local_id = ?`,
     [fecha, localId]
   );
+  
 
   const [servicioRows]: any = await pool.query(
     "SELECT duracion FROM servicios WHERE id = ?",
