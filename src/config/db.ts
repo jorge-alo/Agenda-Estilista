@@ -14,10 +14,21 @@ export const pool = mysql.createPool({
     port: Number(process.env.DB_PORT),
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME
+    database: process.env.DB_NAME,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0,
 })
 
 // 🔥 probar DB
 pool.getConnection()
-  .then(() => console.log("✅ DB conectada"))
-  .catch((err) => console.log("❌ Error DB:", err));
+    .then((conn) => {
+        console.log("✅ DB conectada")
+        conn.ping()
+            .then(() => console.log("✅ Ping OK"))
+            .catch((err) => console.log("❌ Ping falló:", err))
+        conn.release()
+    })
+    .catch((err) => console.log("❌ Error DB:", err))
