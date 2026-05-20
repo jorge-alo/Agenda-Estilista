@@ -12,15 +12,39 @@ export const conectarWhatsApp = async (req: Request, res: Response) => {
       qrcode: true,
     });
   } catch (error: any) {
-    const mensaje = error.response?.data?.response?.message?.[0] || "";
-    const yaExiste = mensaje.toLowerCase().includes("already in use");
-    if (!yaExiste) {
-      console.log("❌ Error creando instancia:", error.response?.data);
-      return res.status(500).json({ error: "Error creando instancia" });
-    }
-    // Si ya existe, continuamos a obtener el QR
-    console.log("⚠️ Instancia ya existe, obteniendo QR...");
+
+  console.log("❌ ERROR CREANDO INSTANCIA");
+  console.log(error);
+
+  console.log("❌ MESSAGE");
+  console.log(error?.message);
+
+  console.log("❌ RESPONSE");
+  console.log(error?.response);
+
+  console.log("❌ RESPONSE DATA");
+  console.log(error?.response?.data);
+
+  const mensaje =
+    error?.response?.data
+      ?.response?.message?.[0] || "";
+
+  const yaExiste =
+    mensaje
+      .toLowerCase()
+      .includes("already in use");
+
+  if (!yaExiste) {
+
+    return res.status(500).json({
+      error: "Error creando instancia"
+    });
   }
+
+  console.log(
+    "⚠️ Instancia ya existe"
+  );
+}
 
   try {
     const { data } = await evolutionClient.get(
@@ -28,7 +52,12 @@ export const conectarWhatsApp = async (req: Request, res: Response) => {
 );
     return res.json({ qr: data.base64 });
   } catch (error: any) {
-    console.log("❌ Error obteniendo QR:", error.response?.data);
+    console.log(
+  "❌ Error obteniendo QR:",
+  error.response?.data || error.message
+);
+console.log("❌ ERROR COMPLETO:");
+console.log(error);
     return res.status(500).json({ error: "Error obteniendo QR" });
   }
 };

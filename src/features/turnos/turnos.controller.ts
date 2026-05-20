@@ -74,20 +74,61 @@ export const getByFechaPublico = async (req: Request, res: Response) => {
 };
 
 
-export const disponibilidad = async (req: Request, res: Response) => {
+export const disponibilidad = async (
+  req: Request,
+  res: Response
+) => {
+
   try {
-    const { slug, fecha, estilista_id, servicio_id } = req.query;
-    console.log("Valor de slug fecha estilista_id y servicio_id", `${slug}, ${fecha}, ${estilista_id} ${servicio_id}`)
-    const data = await turnoService.getDisponibilidad(
-      slug as string,
-      fecha as string,
-      Number(estilista_id),
-      Number(servicio_id)
+
+    const {
+      slug,
+      fecha,
+      estilista_id,
+      servicio_id
+    } = req.query;
+
+    console.log(
+      "Valor de slug fecha estilista_id y servicio_id",
+      `${slug}, ${fecha}, ${estilista_id}, ${servicio_id}`
     );
 
+    // 🔥 SI SOLO QUIERE INFO DEL LOCAL
+    if (
+      !fecha ||
+      !estilista_id ||
+      !servicio_id
+    ) {
+
+      const data =
+        await turnoService.getDisponibilidad(
+          slug as string,
+          "" as string,
+          0,
+          0
+        );
+
+      return res.json(data);
+    }
+
+    // 🔥 DISPONIBILIDAD NORMAL
+    const data =
+      await turnoService.getDisponibilidad(
+        slug as string,
+        fecha as string,
+        Number(estilista_id),
+        Number(servicio_id)
+      );
+
     res.json(data);
+
   } catch (error) {
-    res.status(400).json({ error: "Error" });
+
+    console.error(error);
+
+    res.status(400).json({
+      error: "Error"
+    });
   }
 };
 
