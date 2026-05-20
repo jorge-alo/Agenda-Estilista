@@ -88,30 +88,19 @@ export const disponibilidad = async (
       servicio_id
     } = req.query;
 
-    console.log(
-      "Valor de slug fecha estilista_id y servicio_id",
-      `${slug}, ${fecha}, ${estilista_id}, ${servicio_id}`
-    );
-
-    // 🔥 SI SOLO QUIERE INFO DEL LOCAL
+    // 🔥 VALIDACIÓN
     if (
+      !slug ||
       !fecha ||
       !estilista_id ||
       !servicio_id
     ) {
 
-      const data =
-        await turnoService.getDisponibilidad(
-          slug as string,
-          "" as string,
-          0,
-          0
-        );
-
-      return res.json(data);
+      return res.status(400).json({
+        error: "Faltan parámetros"
+      });
     }
 
-    // 🔥 DISPONIBILIDAD NORMAL
     const data =
       await turnoService.getDisponibilidad(
         slug as string,
@@ -124,10 +113,10 @@ export const disponibilidad = async (
 
   } catch (error) {
 
-    console.error(error);
+    console.log(error);
 
-    res.status(400).json({
-      error: "Error"
+    res.status(500).json({
+      error: "Error interno"
     });
   }
 };
