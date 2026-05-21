@@ -74,50 +74,27 @@ export const getByFechaPublico = async (req: Request, res: Response) => {
 };
 
 
-export const disponibilidad = async (
-  req: Request,
-  res: Response
-) => {
-
+// turnos.controller.ts
+export const disponibilidad = async (req: Request, res: Response) => {
   try {
+    const { slug, fecha, estilista_id, servicio_id } = req.query;
 
-    const {
-      slug,
-      fecha,
-      estilista_id,
-      servicio_id
-    } = req.query;
-
-    // 🔥 VALIDACIÓN
-    if (
-      !slug ||
-      !fecha ||
-      !estilista_id ||
-      !servicio_id
-    ) {
-
-      return res.status(400).json({
-        error: "Faltan parámetros"
-      });
+    if (!slug) {
+      return res.status(400).json({ error: "Falta slug" });
     }
 
-    const data =
-      await turnoService.getDisponibilidad(
-        slug as string,
-        fecha as string,
-        Number(estilista_id),
-        Number(servicio_id)
-      );
+    // ← ya no falla si faltan los otros params, el service los maneja
+    const data = await turnoService.getDisponibilidad(
+      slug as string,
+      fecha as string,
+      Number(estilista_id),
+      Number(servicio_id)
+    );
 
     res.json(data);
-
   } catch (error) {
-
     console.log(error);
-
-    res.status(500).json({
-      error: "Error interno"
-    });
+    res.status(500).json({ error: "Error interno" });
   }
 };
 
