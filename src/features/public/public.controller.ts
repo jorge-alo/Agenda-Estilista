@@ -29,22 +29,18 @@ export const reservar = async (req: Request, res: Response) => {
     const telefonoFormateado = formatPhoneAR(cliente_telefono);
     const telefonoLocalFormateado = formatPhoneAR(turno.telefono);
 
-    try {
-      await sendTurnoConfirmado({
-        clienteNombre: cliente_nombre,
-        clienteTelefono: telefonoFormateado,
-        fecha: new Date(fecha + "T00:00:00").toLocaleDateString("es-AR"),
-        hora,
-        servicio: turno.servicioNombre,
-        localNombre: turno.localNombre,
-        localTelefono: telefonoLocalFormateado,
-         localId: String(turno.localId)
-      });
-    } catch (err) {
-      console.error("Error enviando WhatsApp:", err);
-    }
-
-
+    sendTurnoConfirmado({
+      clienteNombre: cliente_nombre,
+      clienteTelefono: telefonoFormateado,
+      fecha: new Date(fecha + "T00:00:00").toLocaleDateString("es-AR"),
+      hora,
+      servicio: turno.servicioNombre,
+      localNombre: turno.localNombre,
+      localTelefono: telefonoLocalFormateado,
+      localId: String(turno.localId)
+    }).catch((err) => {
+      console.error("Error enviando WhatsApp (no bloqueante):", err);
+    });
 
     res.json({ message: "Turno reservado", telefono: telefonoLocalFormateado });
   } catch (error: any) {
