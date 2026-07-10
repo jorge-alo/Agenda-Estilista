@@ -11,40 +11,22 @@ export const conectarWhatsApp = async (req: Request, res: Response) => {
       instanceName: String(localId),
       qrcode: true,
     });
+    console.log(`✨ Instancia ${localId} creada con éxito.`);
   } catch (error: any) {
+    console.log("❌ ERROR O TIMEOUT AL CREAR INSTANCIA");
+    
+    const mensaje = error?.response?.data?.response?.message?.[0] || "";
+    const yaExiste = mensaje.toLowerCase().includes("already in use") || error?.response?.status === 400;
 
-  console.log("❌ ERROR CREANDO INSTANCIA");
-  console.log(error);
+    // Si NO es porque ya existe (es decir, fue un Timeout o error de Red de Railway), frenamos acá
+    if (!yaExiste) {
+      return res.status(500).json({
+        error: "La API de WhatsApp no respondió a tiempo. Intentá de nuevo en unos segundos."
+      });
+    }
 
-  console.log("❌ MESSAGE");
-  console.log(error?.message);
-
-  console.log("❌ RESPONSE");
-  console.log(error?.response);
-
-  console.log("❌ RESPONSE DATA");
-  console.log(error?.response?.data);
-
-  const mensaje =
-    error?.response?.data
-      ?.response?.message?.[0] || "";
-
-  const yaExiste =
-    mensaje
-      .toLowerCase()
-      .includes("already in use");
-
-  if (!yaExiste) {
-
-    return res.status(500).json({
-      error: "Error creando instancia"
-    });
+    console.log("⚠️ La instancia ya existía en Evolution API, continuamos para obtener el QR...");
   }
-
-  console.log(
-    "⚠️ Instancia ya existe"
-  );
-}
 
   try {
     const { data } = await evolutionClient.get(
