@@ -343,8 +343,8 @@ export const getDisponibilidad = async (
     // 🔒 Verificar bloqueos manuales
     for (const bloqueo of bloqueos) {
 
-      const bloqueoInicio = bloqueo.hora_inicio;
-      const bloqueoFin = bloqueo.hora_fin;
+      const bloqueoInicio = bloqueo.hora_inicio.slice(0, 5);
+      const bloqueoFin = bloqueo.hora_fin.slice(0, 5);
 
       const hayConflictoBloqueo =
         horaInicio < bloqueoFin &&
