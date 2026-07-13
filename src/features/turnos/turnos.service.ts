@@ -300,7 +300,10 @@ export const getDisponibilidad = async (
   let horarios: string[] = [];
 
   for (const h of horariosDB) {
-    const slots = generarHorarios(h.hora_inicio, h.hora_fin);
+    // Normalizar a HH:MM
+    const hInicio = h.hora_inicio.slice(0, 5);
+    const hFin = h.hora_fin.slice(0, 5);
+    const slots = generarHorarios(hInicio, hFin);
     horarios = [...horarios, ...slots];
   }
 
@@ -312,7 +315,12 @@ export const getDisponibilidad = async (
 
     // 🔥 NUEVO: verificar que el turno entre dentro del horario del estilista
     const dentroDelHorario = horariosDB.some(
-      (h: any) => horaInicio >= h.hora_inicio && horaFin <= h.hora_fin
+      (h: any) => {
+        const hInicio = h.hora_inicio.slice(0, 5);
+        const hFin = h.hora_fin.slice(0, 5);
+        return horaInicio >= hInicio && horaFin <= hFin;
+      }
+
     );
 
     if (!dentroDelHorario) continue; // ← descartamos este slot
@@ -320,8 +328,8 @@ export const getDisponibilidad = async (
     let solapado = false;
 
     for (const turno of turnos) {
-      const ocupadoInicio = turno.hora;
-      const ocupadoFin = turno.hora_fin;
+      const ocupadoInicio = turno.hora.slice(0, 5);
+      const ocupadoFin = turno.hora_fin.slice(0, 5);
 
       const hayConflicto =
         horaInicio < ocupadoFin && horaFin > ocupadoInicio;
@@ -355,7 +363,7 @@ export const getDisponibilidad = async (
 
   return {
     disponibles,
-    ocupados: turnos.map((t: any) => t.hora),
+    ocupados: turnos.map((t: any) => t.hora.slice(0, 5)),
     duracion,
     nombreLocal: localRows[0].nombre,
     descripcion: localRows[0].descripcion,
@@ -461,7 +469,10 @@ export const getDisponibilidadAdmin = async (
   // 🧱 5. Generar slots
   let horarios: string[] = [];
   for (const h of horariosDB) {
-    const slots = generarHorarios(h.hora_inicio, h.hora_fin);
+    // Normalizar a HH:MM
+    const hInicio = h.hora_inicio.slice(0, 5);
+    const hFin = h.hora_fin.slice(0, 5);
+    const slots = generarHorarios(hInicio, hFin);
     horarios = [...horarios, ...slots];
   }
 
@@ -471,39 +482,36 @@ export const getDisponibilidadAdmin = async (
     const horaFin = sumarMinutos(horaInicio, duracion);
 
     // 🔥 Verificar que el turno entre dentro del horario del estilista
-    const dentroDelHorario = horariosDB.some(
-      (h: any) => horaInicio >= h.hora_inicio && horaFin <= h.hora_fin
-    );
+    const dentroDelHorario = horariosDB.some((h: any) => {
+      const hInicio = h.hora_inicio.slice(0, 5);
+      const hFin = h.hora_fin.slice(0, 5);
+      return horaInicio >= hInicio && horaFin <= hFin;
+    });
 
     if (!dentroDelHorario) continue;
 
     let solapado = false;
 
     for (const turno of turnos) {
-      if (horaInicio < turno.hora_fin && horaFin > turno.hora) {
+      const ocupadoInicio = turno.hora.slice(0, 5);
+      const ocupadoFin = turno.hora_fin.slice(0, 5);
+
+      if (horaInicio < ocupadoFin && horaFin > ocupadoInicio) {
         solapado = true;
         break;
       }
     }
 
-    // 🔒 Verificar bloqueos manuales
-    for (const bloqueo of bloqueos) {
+    // Control contra bloqueos
+    if (!solapado) {
+      for (const bloqueo of bloqueos) {
+        const bloqueoInicio = bloqueo.hora_inicio.slice(0, 5);
+        const bloqueoFin = bloqueo.hora_fin.slice(0, 5);
 
-      const bloqueoInicio =
-        bloqueo.hora_inicio;
-
-      const bloqueoFin =
-        bloqueo.hora_fin;
-
-      const hayConflictoBloqueo =
-        horaInicio < bloqueoFin &&
-        horaFin > bloqueoInicio;
-
-      if (hayConflictoBloqueo) {
-
-        solapado = true;
-
-        break;
+        if (horaInicio < bloqueoFin && horaFin > bloqueoInicio) {
+          solapado = true;
+          break;
+        }
       }
     }
 
@@ -512,7 +520,7 @@ export const getDisponibilidadAdmin = async (
 
   return {
     disponibles,
-    ocupados: turnos.map((t: any) => t.hora),
+    ocupados: turnos.map((t: any) => t.hora.slice(0, 5)),
     duracion,
   };
 };
