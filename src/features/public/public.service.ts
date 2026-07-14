@@ -2,7 +2,6 @@ import { pool } from "../../config/db";
 import { sumarMinutos } from "../../helpers/sumarMinutos";
 
 export const createTurnoPublico = async (data: any) => {
-
   const {
     slug,
     fecha,
@@ -13,140 +12,111 @@ export const createTurnoPublico = async (data: any) => {
     cliente_telefono,
   } = data;
 
-  // 🔎 1. buscar local
-  const [localRows]: any = await pool.query(
-    `
-    SELECT id, telefono, nombre
-    FROM locales
-    WHERE slug = ?
-    `,
-    [slug]
-  );
+  const connection = await pool.getConnection();
 
-  if (localRows.length === 0) {
-    throw new Error("Local no encontrado");
-  }
+  try {
+    await connection.beginTransaction();
 
-  const localNombre = localRows[0].nombre;
-  const localId = localRows[0].id;
-  const telefono = localRows[0].telefono;
+    // 🔎 1. buscar local
+    const [localRows]: any = await connection.query(
+      `SELECT id, telefono, nombre FROM locales WHERE slug = ?`,
+      [slug]
+    );
 
-  // 🔥 2. obtener duración del servicio
-  const [servicioRows]: any = await pool.query(
-    `
-    SELECT duracion, nombre
-    FROM servicios
-    WHERE id = ?
-    `,
-    [servicio_id]
-  );
+    if (localRows.length === 0) {
+      throw new Error("Local no encontrado");
+    }
 
-  if (servicioRows.length === 0) {
-    throw new Error("Servicio no encontrado");
-  }
+    const localNombre = localRows[0].nombre;
+    const localId = localRows[0].id;
+    const telefono = localRows[0].telefono;
 
-  const servicioNombre = servicioRows[0].nombre;
-  const duracion = servicioRows[0].duracion;
+    // 🔥 2. obtener duración del servicio
+    const [servicioRows]: any = await connection.query(
+      `SELECT duracion, nombre FROM servicios WHERE id = ?`,
+      [servicio_id]
+    );
 
-  // 🧠 3. calcular hora_fin
-  const hora_fin = sumarMinutos(hora, duracion);
+    if (servicioRows.length === 0) {
+      throw new Error("Servicio no encontrado");
+    }
 
-  // 🚫 4. validar solapamiento
-  const [rows]: any = await pool.query(
-    `
-    SELECT id
-    FROM turnos
-    WHERE estilista_id = ?
-    AND fecha = ?
-    AND (
-      (? < hora_fin)
-      AND
-      (? > hora)
-    )
-    `,
-    [estilista_id, fecha, hora, hora_fin]
-  );
+    const servicioNombre = servicioRows[0].nombre;
+    const duracion = servicioRows[0].duracion;
 
-  if (rows.length > 0) {
-    throw new Error("Horario no disponible");
-  }
+    // 🧠 3. calcular hora_fin
+    const hora_fin = sumarMinutos(hora, duracion);
 
-  // 👤 5. buscar cliente existente
-  const [clientes]: any = await pool.query(
-    `
-    SELECT id
-    FROM clientes
-    WHERE telefono = ?
-    AND local_id = ?
-    `,
-    [
-      cliente_telefono,
-      localId
-    ]
-  );
-
-  let clienteId;
-
-  // 👤 6. crear cliente si no existe
-  if (clientes.length > 0) {
-
-    clienteId = clientes[0].id;
-
-  } else {
-
-    const [clienteResult]: any = await pool.query(
+    // 🚫 4. validar solapamiento CON BLOQUEO (FOR UPDATE) + filtro de cancelados
+    const [rows]: any = await connection.query(
       `
-      INSERT INTO clientes (
-        nombre,
-        telefono,
-        local_id
+      SELECT id
+      FROM turnos
+      WHERE estilista_id = ?
+      AND fecha = ?
+      AND estado != 'cancelado'
+      AND (? < hora_fin AND ? > hora)
+      FOR UPDATE
+      `,
+      [estilista_id, fecha, hora, hora_fin]
+    );
+
+    if (rows.length > 0) {
+      throw new Error("Ese horario ya está ocupado");
+    }
+
+    // 👤 5. buscar cliente existente
+    const [clientes]: any = await connection.query(
+      `SELECT id FROM clientes WHERE telefono = ? AND local_id = ?`,
+      [cliente_telefono, localId]
+    );
+
+    let clienteId;
+
+    if (clientes.length > 0) {
+      clienteId = clientes[0].id;
+    } else {
+      const [clienteResult]: any = await connection.query(
+        `INSERT INTO clientes (nombre, telefono, local_id) VALUES (?, ?, ?)`,
+        [cliente_nombre, cliente_telefono, localId]
+      );
+      clienteId = clienteResult.insertId;
+    }
+
+    // 💾 6. insertar turno
+    const [result]: any = await connection.query(
+      `
+      INSERT INTO turnos (
+        fecha, hora, hora_fin, estilista_id, servicio_id,
+        local_id, cliente_nombre, cliente_telefono, cliente_id
       )
-      VALUES (?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
-        cliente_nombre,
-        cliente_telefono,
-        localId
+        fecha, hora, hora_fin, estilista_id, servicio_id,
+        localId, cliente_nombre, cliente_telefono, clienteId,
       ]
     );
 
-    clienteId = clienteResult.insertId;
-  }
+    await connection.commit();
 
-  // 💾 7. insertar turno
-  const [result]: any = await pool.query(
-    `
-    INSERT INTO turnos (
-      fecha,
-      hora,
-      hora_fin,
-      estilista_id,
-      servicio_id,
-      local_id,
-      cliente_nombre,
-      cliente_telefono,
-      cliente_id
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-    [
-      fecha,
-      hora,
-      hora_fin,
-      estilista_id,
-      servicio_id,
+    return {
+      id: result.insertId,
+      telefono,
+      localNombre,
+      servicioNombre,
       localId,
-      cliente_nombre,
-      cliente_telefono,
-      clienteId
-    ]
-  );
+    };
 
-  return {
-    id: result.insertId,
-    telefono,
-    localNombre,
-    servicioNombre,
-    localId
-  };
+  } catch (error: any) {
+    await connection.rollback();
+
+    if (error.code === "ER_DUP_ENTRY") {
+      throw new Error("Ese horario ya está ocupado");
+    }
+
+    throw error;
+  } finally {
+    connection.release();
+  }
 };
