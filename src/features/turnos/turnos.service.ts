@@ -85,8 +85,11 @@ export const createTurno = async (data: any) => {
 
     await connection.commit();
     return result.insertId;
-  } catch (error) {
+  } catch (error: any) {
     await connection.rollback();
+    if (error.code === "ER_DUP_ENTRY") {
+      throw new Error("Ese horario ya está ocupado");
+    }
     throw error;
   } finally {
     connection.release();
