@@ -14,14 +14,12 @@ export const createTurno = async (data: any) => {
     cliente_telefono,
   } = data;
 
-  // 1. Pedir una conexión EXCLUSIVA del pool
   const connection = await pool.getConnection();
 
   try {
-    // 2. Iniciar la transacción
     await connection.beginTransaction();
 
-    // 🔍 Obtener duración del servicio
+    // 🔍 1. Duración del servicio
     const [servicioRows]: any = await connection.query(
       `SELECT duracion FROM servicios WHERE id = ?`,
       [servicio_id]
@@ -34,17 +32,15 @@ export const createTurno = async (data: any) => {
     const duracion = servicioRows[0].duracion;
     const hora_fin = sumarMinutos(hora, duracion);
 
-    // 🚫 VALIDACIÓN CON BLOQUEO EXCLUSIVO (FOR UPDATE)
+    // 🚫 2. Validar solapamiento CON BLOQUEO (FOR UPDATE)
     const [rows]: any = await connection.query(
       `
       SELECT id
-      FROM turnos WITH (UPDLOCK) -- Fuerza el bloqueo
+      FROM turnos
       WHERE estilista_id = ?
-        AND fecha = ?
-        AND estado != 'cancelado'
-        AND (
-          (? < hora_fin) AND (? > hora)
-        )
+      AND fecha = ?
+      AND estado != 'cancelado'
+      AND (? < hora_fin AND ? > hora)
       FOR UPDATE
       `,
       [estilista_id, fecha, hora, hora_fin]
@@ -54,13 +50,14 @@ export const createTurno = async (data: any) => {
       throw new Error("Ese horario ya está ocupado");
     }
 
-    // 👤 Buscar o crear cliente (usando 'connection')
+    // 👤 3. Buscar/crear cliente
     const [clientes]: any = await connection.query(
       `SELECT id FROM clientes WHERE telefono = ? AND local_id = ?`,
       [cliente_telefono, local_id]
     );
 
     let clienteId;
+
     if (clientes.length > 0) {
       clienteId = clientes[0].id;
     } else {
@@ -71,36 +68,27 @@ export const createTurno = async (data: any) => {
       clienteId = clienteResult.insertId;
     }
 
-    // 💾 Insertar el turno (usando 'connection')
+    // 💾 4. Insertar turno
     const [result]: any = await connection.query(
       `
       INSERT INTO turnos (
-        fecha, hora, hora_fin, estilista_id, servicio_id, local_id, cliente_nombre, cliente_telefono, cliente_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        fecha, hora, hora_fin, estilista_id, servicio_id,
+        local_id, cliente_nombre, cliente_telefono, cliente_id
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
-        fecha,
-        hora,
-        hora_fin,
-        estilista_id,
-        servicio_id,
-        local_id,
-        cliente_nombre,
-        cliente_telefono,
-        clienteId,
+        fecha, hora, hora_fin, estilista_id, servicio_id,
+        local_id, cliente_nombre, cliente_telefono, clienteId,
       ]
     );
 
-    // 3. Confirmar transacción (recién acá se libera el bloqueo para otras peticiones)
     await connection.commit();
     return result.insertId;
-
   } catch (error) {
-    // Si algo falla o se detecta ocupado, se deshacen todos los pasos
     await connection.rollback();
     throw error;
   } finally {
-    // 4. Devolver la conexión al pool
     connection.release();
   }
 };
