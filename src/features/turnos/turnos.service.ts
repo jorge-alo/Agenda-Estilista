@@ -14,13 +14,14 @@ export const createTurno = async (data: any) => {
     cliente_telefono,
   } = data;
 
-  // Obtener una conexión individual del pool para la transacción
+  // 1. Pedir una conexión EXCLUSIVA del pool
   const connection = await pool.getConnection();
 
   try {
+    // 2. Iniciar la transacción
     await connection.beginTransaction();
 
-    // 🔍 1. Obtener duración del servicio
+    // 🔍 Obtener duración del servicio
     const [servicioRows]: any = await connection.query(
       `SELECT duracion FROM servicios WHERE id = ?`,
       [servicio_id]
@@ -33,17 +34,17 @@ export const createTurno = async (data: any) => {
     const duracion = servicioRows[0].duracion;
     const hora_fin = sumarMinutos(hora, duracion);
 
-    // 🚫 2. Validar solapamiento con BLOQUEO (FOR UPDATE)
+    // 🚫 VALIDACIÓN CON BLOQUEO EXCLUSIVO (FOR UPDATE)
     const [rows]: any = await connection.query(
       `
       SELECT id
-      FROM turnos
+      FROM turnos WITH (UPDLOCK) -- Fuerza el bloqueo
       WHERE estilista_id = ?
-      AND fecha = ?
-      AND estado != 'cancelado'
-      AND (
-        (? < hora_fin) AND (? > hora)
-      )
+        AND fecha = ?
+        AND estado != 'cancelado'
+        AND (
+          (? < hora_fin) AND (? > hora)
+        )
       FOR UPDATE
       `,
       [estilista_id, fecha, hora, hora_fin]
@@ -53,7 +54,7 @@ export const createTurno = async (data: any) => {
       throw new Error("Ese horario ya está ocupado");
     }
 
-    // 👤 3. Buscar o crear cliente
+    // 👤 Buscar o crear cliente (usando 'connection')
     const [clientes]: any = await connection.query(
       `SELECT id FROM clientes WHERE telefono = ? AND local_id = ?`,
       [cliente_telefono, local_id]
@@ -70,7 +71,7 @@ export const createTurno = async (data: any) => {
       clienteId = clienteResult.insertId;
     }
 
-    // 💾 4. Insertar turno
+    // 💾 Insertar el turno (usando 'connection')
     const [result]: any = await connection.query(
       `
       INSERT INTO turnos (
@@ -90,16 +91,16 @@ export const createTurno = async (data: any) => {
       ]
     );
 
-    // Confirmar cambios
+    // 3. Confirmar transacción (recién acá se libera el bloqueo para otras peticiones)
     await connection.commit();
     return result.insertId;
 
   } catch (error) {
-    // Si algo falla, deshacer los cambios en la BD
+    // Si algo falla o se detecta ocupado, se deshacen todos los pasos
     await connection.rollback();
     throw error;
   } finally {
-    // Liberar la conexión para que vuelva al pool
+    // 4. Devolver la conexión al pool
     connection.release();
   }
 };
