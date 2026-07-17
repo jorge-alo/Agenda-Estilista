@@ -16,7 +16,23 @@ import routerConfiguracion from "./features/configuracion/configuracion.routes";
 
 const app = express();
 
-app.use(cors());
+const allowedOrigins = (process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map((origin) => origin.trim()); // saca espacios de más, por si acaso
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // 'origin' es undefined cuando el pedido no viene de un navegador
+    // (por ejemplo, Postman, o un curl, o un servidor llamando a otro servidor)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true); // ✅ permitido
+    } else {
+      callback(new Error("No permitido por CORS")); // ❌ bloqueado
+    }
+  },
+  credentials: true, // si en algún momento usás cookies, esto es necesario
+}));
+
 app.use(express.json());
 
 app.use("/api/auth", AuthRouter);
