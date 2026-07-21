@@ -27,8 +27,6 @@ if (!process.env.CORS_ORIGINS) {
 }
 
 const app = express();
-
-app.use(express.json({ limit: "1mb" }));
 app.use(helmet());
 
 const allowedOrigins = (process.env.CORS_ORIGINS || "")
@@ -48,7 +46,7 @@ app.use(cors({
   credentials: true, // si en algún momento usás cookies, esto es necesario
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
