@@ -93,25 +93,24 @@ export const obtenerBloqueosController =
     }
   };
 
-  export const eliminarBloqueoController =
-  async (req: Request, res: Response) => {
-
+ export const eliminarBloqueoController =
+  async (req: AuthRequest, res: Response) => {
     try {
+      const localId = req.user?.localId;
 
-      const id =
-        Number(req.params.id);
+      if (!localId) {
+        return res.status(401).json({ error: "No autorizado" });
+      }
 
-      await eliminarBloqueo(id);
+      const id = Number(req.params.id);
 
-      res.json({
-        ok: true
-      });
+      await eliminarBloqueo(id, localId);
 
-    } catch (error) {
-
-      res.status(500).json({
-        error: "Error eliminando bloqueo"
-      });
-
+      res.json({ ok: true });
+    } catch (error: any) {
+      if (error.message === "Bloqueo no encontrado o no pertenece a tu local") {
+        return res.status(404).json({ error: error.message });
+      }
+      res.status(500).json({ error: "Error eliminando bloqueo" });
     }
   };

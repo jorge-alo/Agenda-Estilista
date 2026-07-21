@@ -67,9 +67,14 @@ export const getServiciosByLocalId = async (req: AuthRequest, res: Response) => 
 
 
 
-export const asignarServicio = async (req: Request, res: Response) => {
+export const asignarServicio = async (req: AuthRequest, res: Response) => {
   try {
     const { estilista_id, servicio_id } = req.body;
+    const localId = req.user?.localId;
+
+      if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
 
     if (!estilista_id || !servicio_id) {
       return res.status(400).json({ error: "Faltan datos" });
@@ -77,11 +82,15 @@ export const asignarServicio = async (req: Request, res: Response) => {
 
     await servicioService.asignarServicioAEstilista(
       estilista_id,
-      servicio_id
+      servicio_id,
+      localId
     );
 
     res.json({ message: "Servicio asignado al estilista" });
-  } catch (error) {
+  } catch (error: any) {
+    if (error.message.includes("no pertenece")) {
+      return res.status(400).json({ error: error.message });
+    }
     res.status(500).json({ error: "Error asignando servicio" });
   }
 };
@@ -101,7 +110,7 @@ export const getServiciosPorEstilista = async (req: Request, res: Response) => {
 };
 
 export const removeServicio = async (req: AuthRequest, res: Response) => {
-    try {
+  try {
     const { id } = req.params;
     const localId = req.user?.localId;
 
@@ -112,39 +121,57 @@ export const removeServicio = async (req: AuthRequest, res: Response) => {
     await servicioService.deleteServicio(Number(id), localId);
     res.json({ message: "Servicio eliminado" });
   } catch (error: any) {
-    console.log("Error real:", error.message);
     if (error.message === "Tiene turnos asociados") {
       return res.status(400).json({ error: error.message });
+    }
+    if (error.message === "Servicio no encontrado o no pertenece a tu local") {
+      return res.status(404).json({ error: error.message });
     }
     res.status(500).json({ error: "Error eliminando servicio" });
   }
 };
 
-export const toggleServicio = async (req: Request, res: Response) => {
+export const toggleServicio = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
+    const localId = req.user?.localId;
 
-    await servicioService.toggleServicio(Number(id));
+    if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    await servicioService.toggleServicio(Number(id), localId);
 
     res.json({ message: "Estado actualizado" });
-  } catch (error) {
-    console.log("ERROR TOGGLE:", error); // 👈 CLAVE
+  } catch (error: any) {
+    if (error.message === "Servicio no encontrado o no pertenece a tu local") {
+      return res.status(404).json({ error: error.message });
+    }
     res.status(500).json({ error: "Error" });
   }
 };
 
-export const desasignarServicio = async (req: Request, res: Response) => {
+// controller
+export const desasignarServicio = async (req: AuthRequest, res: Response) => {
   try {
     const { estilista_id, servicio_id } = req.body;
+    const localId = req.user?.localId;
+
+    if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
 
     if (!estilista_id || !servicio_id) {
       return res.status(400).json({ error: "Faltan datos" });
     }
 
-    await servicioService.desasignarServicio(estilista_id, servicio_id);
+    await servicioService.desasignarServicio(estilista_id, servicio_id, localId);
 
     res.json({ message: "Servicio desasignado" });
-  } catch (error) {
+  } catch (error: any) {
+    if (error.message.includes("no pertenece")) {
+      return res.status(400).json({ error: error.message });
+    }
     res.status(500).json({ error: "Error desasignando servicio" });
   }
 };

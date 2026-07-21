@@ -83,14 +83,13 @@ export const obtenerBloqueosService =
     return rows;
   };
 
-  export const eliminarBloqueo =
-  async (id: number) => {
+ export const eliminarBloqueo = async (id: number, localId: number) => {
+  const [result]: any = await pool.query(
+    `DELETE FROM bloqueos_horarios WHERE id = ? AND local_id = ?`,
+    [id, localId]
+  );
 
-    await pool.query(
-      `
-      DELETE FROM bloqueos_horarios
-      WHERE id = ?
-      `,
-      [id]
-    );
-  };
+  if (result.affectedRows === 0) {
+    throw new Error("Bloqueo no encontrado o no pertenece a tu local");
+  }
+};
