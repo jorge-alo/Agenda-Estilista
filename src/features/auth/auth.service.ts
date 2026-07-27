@@ -55,7 +55,7 @@ export const requestPasswordReset = async (email: string) => {
 
   // 📧 En producción, aquí iría el envío de email (Nodemailer, Resend, etc.)
   // Para desarrollo, lo mostramos en consola para que puedas copiar el link y probar:
-  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+  const frontendUrl = process.env.FRONTEND_URL;
   console.log(`\n🔗 [DEV] Link de recuperación para ${email}:`);
   console.log(`${frontendUrl}/reset-password?token=${resetToken}\n`);
 
