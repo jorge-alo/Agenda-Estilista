@@ -27,6 +27,7 @@ if (!process.env.CORS_ORIGINS) {
 }
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(helmet());
 
 const allowedOrigins = (process.env.CORS_ORIGINS || "")
