@@ -57,3 +57,51 @@ export const getEstilistasAdmin = async (req: AuthRequest, res: Response) => {
         res.status(500).json({ error: "Error" });
     }
 };
+
+export const update = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { nombre } = req.body;
+    const localId = req.user?.localId;
+
+    if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    if (!nombre) {
+      return res.status(400).json({ error: "Nombre requerido" });
+    }
+
+    await estilistaService.updateEstilista(Number(id), nombre, localId);
+
+    res.json({ message: "Estilista actualizado" });
+  } catch (error: any) {
+    if (error.message === "Estilista no encontrado o no pertenece a tu local") {
+      return res.status(404).json({ error: error.message });
+    }
+    res.status(500).json({ error: "Error al actualizar estilista" });
+  }
+};
+
+export const remove = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const localId = req.user?.localId;
+
+    if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    await estilistaService.deleteEstilista(Number(id), localId);
+
+    res.json({ message: "Estilista eliminado" });
+  } catch (error: any) {
+    if (error.message === "Tiene turnos activos futuros") {
+      return res.status(400).json({ error: error.message });
+    }
+    if (error.message === "Estilista no encontrado o no pertenece a tu local") {
+      return res.status(404).json({ error: error.message });
+    }
+    res.status(500).json({ error: "Error al eliminar estilista" });
+  }
+};
