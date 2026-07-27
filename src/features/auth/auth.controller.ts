@@ -30,3 +30,39 @@ export const login = async (req: Request, res: Response) => {
         res.status(400).json({ error: "Credenciales inválidas" });
     }
 };
+
+export const forgotPassword = async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: "Email requerido" });
+
+    await authService.requestPasswordReset(email);
+    
+    // Siempre respondemos 200 OK por seguridad (previene enumeración de usuarios)
+    res.json({ message: "Si el correo está registrado, recibirás un enlace de recuperación." });
+  } catch (error) {
+    res.status(500).json({ error: "Error al procesar la solicitud" });
+  }
+};
+
+// ✅ NUEVO: Controlador para guardar la nueva contraseña
+export const resetPassword = async (req: Request, res: Response) => {
+  try {
+    const { token, newPassword } = req.body;
+    
+    if (!token || !newPassword) {
+      return res.status(400).json({ error: "Token y nueva contraseña son requeridos" });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: "La contraseña debe tener al menos 6 caracteres" });
+    }
+
+    await authService.resetPassword(token, newPassword);
+    res.json({ message: "Contraseña actualizada correctamente" });
+  } catch (error: any) {
+    if (error.message === "Token inválido o expirado") {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: "Error al restablecer la contraseña" });
+  }
+};
