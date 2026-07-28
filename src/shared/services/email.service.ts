@@ -4,6 +4,8 @@ const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: Number(process.env.SMTP_PORT),
   secure: false,
+  connectionTimeout: 5000, // ⚠️ AGREGADO: Se rinde en 5 segundos
+  socketTimeout: 5000,     // ⚠️ AGREGADO: Se rinde en 5 segundos
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS?.replace(/\s/g, ""),
