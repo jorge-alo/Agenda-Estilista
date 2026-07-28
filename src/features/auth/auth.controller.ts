@@ -32,6 +32,7 @@ export const login = async (req: Request, res: Response) => {
 };
 
 export const forgotPassword = async (req: Request, res: Response) => {
+   console.log("🚨 ¡LLEGÓ LA PETICIÓN DE FORGOT PASSWORD!", req.body);
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Email requerido" });
