@@ -1,6 +1,7 @@
 import bcrypt from "bcrypt";
 import { pool } from "../../config/db";
 import crypto from "crypto";
+import { emailService } from "../../shared/services/email.service";
 
 export const loginUser = async (email: string, password: string) => {
   const [rows]: any = await pool.query(
@@ -43,6 +44,7 @@ export const requestPasswordReset = async (email: string) => {
   }
 
   const userId = rows[0].id;
+  const nombreUsuario = rows[0].nombre;
   // Generamos un token criptográfico seguro de 64 caracteres
   const resetToken = crypto.randomBytes(32).toString("hex");
   // Expira en 15 minutos
@@ -56,8 +58,23 @@ export const requestPasswordReset = async (email: string) => {
   // 📧 En producción, aquí iría el envío de email (Nodemailer, Resend, etc.)
   // Para desarrollo, lo mostramos en consola para que puedas copiar el link y probar:
   const frontendUrl = process.env.CORS_ORIGINS;
+  const resetLink = `${frontendUrl}/reset-password?token=${resetToken}`;
   console.log(`\n🔗 [DEV] Link de recuperación para ${email}:`);
   console.log(`${frontendUrl}/reset-password?token=${resetToken}\n`);
+
+   // 📧 Enviar email con Nodemailer + Gmail
+  const emailResult = await emailService.enviarEmailRecuperacion({
+    to: email,
+    resetLink,
+    nombreUsuario,
+  });
+
+    // Fallback: si falla el envío, mostrar link en consola (solo en desarrollo)
+  if (!emailResult.success) {
+    console.log(`\n🔗 [DEV] Link de recuperación para ${email}:`);
+    console.log(`${resetLink}\n`);
+  }
+
 
   return { success: true };
 };
