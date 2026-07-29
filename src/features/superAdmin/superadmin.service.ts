@@ -131,7 +131,7 @@ export const toggleLocalActivo = async (id: number) => {
 };
 
 // Eliminar local y su admin (soft delete o hard delete)
-// Eliminar local y todos sus datos asociados de forma segura
+// Eliminar local y todos sus datos asociados de forma segura y en el orden correcto
 export const deleteLocal = async (id: number) => {
   const connection = await pool.getConnection();
   try {
@@ -143,32 +143,44 @@ export const deleteLocal = async (id: number) => {
       throw new Error("Local no encontrado");
     }
 
-    // 2. Limpiar tablas dependientes (en orden para evitar conflictos de FK)
-    // Nota: Ajusta los nombres de las tablas si en tu BD se llaman diferente
-    
-    // Turnos (dependen de local_id y estilista_id)
+    // 2. Obtener los IDs de los estilistas de este local (necesario para borrar sus relaciones)
+    const [estilistasRows]: any = await connection.query(
+      "SELECT id FROM estilistas WHERE local_id = ?", 
+      [id]
+    );
+    const estilistaIds = estilistasRows.map((e: any) => e.id);
+
+    // 3. Limpiar dependencias de ESTILISTAS (si existen)
+    if (estilistaIds.length > 0) {
+      const placeholders = estilistaIds.map(() => '?').join(',');
+      
+      // Primero las relaciones muchos a muchos y dependencias directas del estilista
+      await connection.query(
+        `DELETE FROM estilista_servicios WHERE estilista_id IN (${placeholders})`, 
+        estilistaIds
+      );
+      await connection.query(
+        `DELETE FROM horarios WHERE estilista_id IN (${placeholders})`, 
+        estilistaIds
+      );
+    }
+
+    // 4. Limpiar tablas que dependen directamente del local_id
     await connection.query("DELETE FROM turnos WHERE local_id = ?", [id]);
-    
-    // Bloqueos horarios
     await connection.query("DELETE FROM bloqueos_horarios WHERE local_id = ?", [id]);
-    
-    // Estilistas (esto también borrará sus relaciones en estilista_servicios y horarios si tienen ON DELETE CASCADE, 
-    // si no, habría que borrarlas aquí también)
-    await connection.query("DELETE FROM estilistas WHERE local_id = ?", [id]);
-    
-    // Servicios
     await connection.query("DELETE FROM servicios WHERE local_id = ?", [id]);
-    
-    // Clientes
     await connection.query("DELETE FROM clientes WHERE local_id = ?", [id]);
     
-    // Configuración del local
-    await connection.query("DELETE FROM configuracion WHERE local_id = ?", [id]);
+    // Si tienes tabla de configuración, descomenta la siguiente línea:
+    // await connection.query("DELETE FROM configuracion WHERE local_id = ?", [id]);
 
-    // 3. Borrar usuarios asociados a este local (admins y estilistas si los hubiera como usuarios)
+    // 5. Ahora SÍ podemos borrar los estilistas (ya no tienen dependencias)
+    await connection.query("DELETE FROM estilistas WHERE local_id = ?", [id]);
+
+    // 6. Borrar usuarios asociados a este local (admins)
     await connection.query("DELETE FROM usuarios WHERE local_id = ?", [id]);
 
-    // 4. Finalmente, borrar el local
+    // 7. Finalmente, borrar el local (el padre de todo)
     await connection.query("DELETE FROM locales WHERE id = ?", [id]);
 
     await connection.commit();
