@@ -131,25 +131,51 @@ export const toggleLocalActivo = async (id: number) => {
 };
 
 // Eliminar local y su admin (soft delete o hard delete)
+// Eliminar local y todos sus datos asociados de forma segura
 export const deleteLocal = async (id: number) => {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
 
-    // Primero usuarios (FK constraint)
-    await connection.query(
-      "DELETE FROM usuarios WHERE local_id = ?",
-      [id]
-    );
-    await connection.query(
-      "DELETE FROM locales WHERE id = ?",
-      [id]
-    );
+    // 1. Verificar que el local existe
+    const [locales]: any = await connection.query("SELECT id FROM locales WHERE id = ?", [id]);
+    if (locales.length === 0) {
+      throw new Error("Local no encontrado");
+    }
+
+    // 2. Limpiar tablas dependientes (en orden para evitar conflictos de FK)
+    // Nota: Ajusta los nombres de las tablas si en tu BD se llaman diferente
+    
+    // Turnos (dependen de local_id y estilista_id)
+    await connection.query("DELETE FROM turnos WHERE local_id = ?", [id]);
+    
+    // Bloqueos horarios
+    await connection.query("DELETE FROM bloqueos_horarios WHERE local_id = ?", [id]);
+    
+    // Estilistas (esto también borrará sus relaciones en estilista_servicios y horarios si tienen ON DELETE CASCADE, 
+    // si no, habría que borrarlas aquí también)
+    await connection.query("DELETE FROM estilistas WHERE local_id = ?", [id]);
+    
+    // Servicios
+    await connection.query("DELETE FROM servicios WHERE local_id = ?", [id]);
+    
+    // Clientes
+    await connection.query("DELETE FROM clientes WHERE local_id = ?", [id]);
+    
+    // Configuración del local
+    await connection.query("DELETE FROM configuracion WHERE local_id = ?", [id]);
+
+    // 3. Borrar usuarios asociados a este local (admins y estilistas si los hubiera como usuarios)
+    await connection.query("DELETE FROM usuarios WHERE local_id = ?", [id]);
+
+    // 4. Finalmente, borrar el local
+    await connection.query("DELETE FROM locales WHERE id = ?", [id]);
 
     await connection.commit();
     return { deleted: true };
-  } catch (error) {
+  } catch (error: any) {
     await connection.rollback();
+    console.error("❌ Error en transacción de deleteLocal:", error);
     throw error;
   } finally {
     connection.release();
