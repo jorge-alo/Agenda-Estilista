@@ -56,10 +56,23 @@ export const toggleLocal = async (req: Request, res: Response) => {
 export const deleteLocal = async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id as string);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "ID de local inválido" });
+    }
+    
     await superadminService.deleteLocal(id);
     res.json({ message: "Local eliminado correctamente" });
-  } catch (error) {
-    res.status(500).json({ error: "Error interno" });
+  } catch (error: any) {
+    // ✅ ESTO ES CLAVE: Muestra el error real en los logs de Railway
+    console.error("❌ ERROR AL ELIMINAR LOCAL:", error);
+    
+    // Si es un error de clave foránea de MySQL
+    if (error.code === "ER_ROW_IS_REFERENCED_2" || error.code === "ER_CANNOT_DELETE_OR_UPDATE_A_PARENT_ROW") {
+      return res.status(400).json({ 
+        error: "No se puede eliminar el local porque tiene datos asociados (turnos, estilistas, etc.)." 
+      });
+    }
+    
+    res.status(500).json({ error: error.message || "Error interno al eliminar el local" });
   }
 };
-
