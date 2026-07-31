@@ -59,16 +59,19 @@ export const crearLinkPago = async (req: Request, res: Response) => {
 };
 
 export const webhook = async (req: Request, res: Response) => {
+
+   console.log("📥 WEBHOOK RECIBIDO:", JSON.stringify(req.body, null, 2));
   try {
     const { type, data } = req.body;
 
     // Mercado Pago envía diferentes tipos de notificaciones
     if (type === 'payment') {
       const paymentId = data.id;
+      console.log("💳 Procesando pago ID:", paymentId);
 
       // Obtener información del pago desde MP
       const payment: any = await obtenerPaymentInfo(paymentId); // Usamos 'any' para flexibilidad con la respuesta de MP
-      
+      console.log("📋 Info del pago:", JSON.stringify(payment, null, 2));
       if (!payment) {
         return res.status(400).json({ error: 'Pago no encontrado en MP' });
       }
