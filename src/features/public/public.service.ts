@@ -1,5 +1,6 @@
 import { pool } from "../../config/db";
 import { sumarMinutos } from "../../helpers/sumarMinutos";
+import { pagosService } from "../pagos/pagos.service"; // ✅ 1. IMPORTAR EL SERVICIO DE PAGOS
 
 export const createTurnoPublico = async (data: any) => {
   const {
@@ -31,9 +32,9 @@ export const createTurnoPublico = async (data: any) => {
     const localId = localRows[0].id;
     const telefono = localRows[0].telefono;
 
-    // 🔥 2. obtener duración del servicio
+    // 🔥 2. obtener duración y PRECIO del servicio ✅ (Agregamos 'precio')
     const [servicioRows]: any = await connection.query(
-      `SELECT duracion, nombre FROM servicios WHERE id = ?`,
+      `SELECT duracion, nombre, precio FROM servicios WHERE id = ?`,
       [servicio_id]
     );
 
@@ -43,6 +44,7 @@ export const createTurnoPublico = async (data: any) => {
 
     const servicioNombre = servicioRows[0].nombre;
     const duracion = servicioRows[0].duracion;
+    const precio = servicioRows[0].precio;
 
     // 🧠 3. calcular hora_fin
     const hora_fin = sumarMinutos(hora, duracion);
@@ -83,14 +85,14 @@ export const createTurnoPublico = async (data: any) => {
       clienteId = clienteResult.insertId;
     }
 
-    // 💾 6. insertar turno
+    // 💾 6. insertar turno (✅ Agregamos estado 'pendiente_pago')
     const [result]: any = await connection.query(
       `
       INSERT INTO turnos (
         fecha, hora, hora_fin, estilista_id, servicio_id,
-        local_id, cliente_nombre, cliente_telefono, cliente_id
+        local_id, cliente_nombre, cliente_telefono, cliente_id, estado
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendiente_pago')
       `,
       [
         fecha, hora, hora_fin, estilista_id, servicio_id,
@@ -98,14 +100,27 @@ export const createTurnoPublico = async (data: any) => {
       ]
     );
 
+    const turnoId = result.insertId;
+
+    // 💳 7. ✅ GENERAR LINK DE PAGO DE MERCADO PAGO
+    const mpResult = await pagosService.crearPreference({
+      turnoId,
+      localId,
+      servicioNombre,
+      monto: precio,
+      tipo: 'seña',
+      porcentajeSeña: 30, // Cobramos el 30% de seña
+    });
+
     await connection.commit();
 
     return {
-      id: result.insertId,
+      id: turnoId,
       telefono,
       localNombre,
       servicioNombre,
       localId,
+      mpLink: mpResult.initPoint, // ✅ 8. Devolvemos el link al controller
     };
 
   } catch (error: any) {

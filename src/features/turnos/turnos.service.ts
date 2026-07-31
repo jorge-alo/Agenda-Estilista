@@ -224,11 +224,24 @@ export const getDisponibilidad = async (
     };
   }
 
-  // 📆 4. Turnos existentes (IMPORTANTE: traer hora_fin)
+    // 🧹 4. ✅ LIMPIEZA RÁPIDA: Cancelar turnos pendientes de pago con más de 15 minutos
+  // Esto libera los horarios "fantasma" antes de calcular la disponibilidad
+  await pool.query(
+    `UPDATE turnos 
+     SET estado = 'cancelado' 
+     WHERE local_id = ? 
+     AND fecha = ? 
+     AND estilista_id = ?
+     AND estado = 'pendiente_pago' 
+     AND created_at <= DATE_SUB(NOW(), INTERVAL 15 MINUTE)`,
+    [localId, fecha, estilistaId]
+  );
+
+    // 📆 5. Turnos existentes (✅ CORREGIDO: incluye 'pendiente_pago' para bloquear el horario mientras el cliente paga)
   const [turnos]: any = await pool.query(
     `SELECT hora, hora_fin 
      FROM turnos 
-     WHERE fecha = ? AND local_id = ? AND estilista_id = ? AND estado = 'activo'`,
+     WHERE fecha = ? AND local_id = ? AND estilista_id = ? AND estado IN ('activo', 'pendiente_pago')`,
     [fecha, localId, estilistaId]
   );
 
@@ -243,7 +256,7 @@ export const getDisponibilidad = async (
     [fecha, localId, estilistaId]
   );
 
-  // 💇 5. Duración del servicio
+  // 💇 6. Duración del servicio
   const [servicioRows]: any = await pool.query(
     "SELECT duracion FROM servicios WHERE id = ?",
     [servicio_id]
@@ -266,7 +279,7 @@ export const getDisponibilidad = async (
     horarios = [...horarios, ...slots];
   }
 
-  // 🧠 7. Calcular disponibilidad REAL (con solapamiento)
+  //🧠 8. Calcular disponibilidad REAL (con solapamiento)
   const disponibles: string[] = [];
 
   for (const horaInicio of horarios) {

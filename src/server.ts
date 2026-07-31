@@ -15,6 +15,7 @@ import clientesRouter from "./features/clientes/clientes.routes";
 import routerConfiguracion from "./features/configuracion/configuracion.routes";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
+import pagosRouter from "./features/pagos/pagos.route";
 
 if (!process.env.JWT_SECRET) {
   console.error("❌ FALTA JWT_SECRET en variables de entorno");
@@ -67,6 +68,7 @@ app.use("/api/dashboard", dashboardRouter);
 app.use("/api/bloqueos", bloqueosRouter);
 app.use("/api/clientes", clientesRouter);
 app.use("/api/configuracion", routerConfiguracion);
+app.use("/api/pagos", pagosRouter);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

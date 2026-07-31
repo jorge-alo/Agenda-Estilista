@@ -42,7 +42,7 @@ export const reservar = async (req: Request, res: Response) => {
       console.error("Error enviando WhatsApp (no bloqueante):", err);
     });
 
-    res.json({ message: "Turno reservado", telefono: telefonoLocalFormateado });
+    res.json({ message: "Turno reservado", telefono: telefonoLocalFormateado, mpLink: turno.mpLink  });
   } catch (error: any) {
     res.status(400).json({ error: error.message });
   }
