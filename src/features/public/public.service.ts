@@ -1,6 +1,6 @@
 import { pool } from "../../config/db";
 import { sumarMinutos } from "../../helpers/sumarMinutos";
-import { pagosService } from "../pagos/pagos.service"; // ✅ 1. IMPORTAR EL SERVICIO DE PAGOS
+import { pagosService } from "../pagos/pagos.service";
 
 export const createTurnoPublico = async (data: any) => {
   const {
@@ -15,6 +15,14 @@ export const createTurnoPublico = async (data: any) => {
 
   const connection = await pool.getConnection();
 
+  // Variables que necesitamos fuera del try de la transacción
+  let turnoId: number;
+  let telefono: string;
+  let localNombre: string;
+  let servicioNombre: string;
+  let localIdFinal: number;
+  let precio: number;
+
   try {
     await connection.beginTransaction();
 
@@ -28,11 +36,11 @@ export const createTurnoPublico = async (data: any) => {
       throw new Error("Local no encontrado");
     }
 
-    const localNombre = localRows[0].nombre;
-    const localId = localRows[0].id;
-    const telefono = localRows[0].telefono;
+    localNombre = localRows[0].nombre;
+    localIdFinal = localRows[0].id;
+    telefono = localRows[0].telefono;
 
-    // 🔥 2. obtener duración y PRECIO del servicio ✅ (Agregamos 'precio')
+    // 🔥 2. obtener duración y PRECIO del servicio
     const [servicioRows]: any = await connection.query(
       `SELECT duracion, nombre, precio FROM servicios WHERE id = ?`,
       [servicio_id]
@@ -42,9 +50,9 @@ export const createTurnoPublico = async (data: any) => {
       throw new Error("Servicio no encontrado");
     }
 
-    const servicioNombre = servicioRows[0].nombre;
+    servicioNombre = servicioRows[0].nombre;
     const duracion = servicioRows[0].duracion;
-    const precio = servicioRows[0].precio;
+    precio = servicioRows[0].precio;
 
     // 🧠 3. calcular hora_fin
     const hora_fin = sumarMinutos(hora, duracion);
@@ -70,7 +78,7 @@ export const createTurnoPublico = async (data: any) => {
     // 👤 5. buscar cliente existente
     const [clientes]: any = await connection.query(
       `SELECT id FROM clientes WHERE telefono = ? AND local_id = ?`,
-      [cliente_telefono, localId]
+      [cliente_telefono, localIdFinal]
     );
 
     let clienteId;
@@ -80,12 +88,12 @@ export const createTurnoPublico = async (data: any) => {
     } else {
       const [clienteResult]: any = await connection.query(
         `INSERT INTO clientes (nombre, telefono, local_id) VALUES (?, ?, ?)`,
-        [cliente_nombre, cliente_telefono, localId]
+        [cliente_nombre, cliente_telefono, localIdFinal]
       );
       clienteId = clienteResult.insertId;
     }
 
-    // 💾 6. insertar turno (✅ Agregamos estado 'pendiente_pago')
+    // 💾 6. insertar turno con estado 'pendiente_pago'
     const [result]: any = await connection.query(
       `
       INSERT INTO turnos (
@@ -96,32 +104,14 @@ export const createTurnoPublico = async (data: any) => {
       `,
       [
         fecha, hora, hora_fin, estilista_id, servicio_id,
-        localId, cliente_nombre, cliente_telefono, clienteId,
+        localIdFinal, cliente_nombre, cliente_telefono, clienteId,
       ]
     );
 
-    const turnoId = result.insertId;
+    turnoId = result.insertId;
 
-    // 💳 7. ✅ GENERAR LINK DE PAGO DE MERCADO PAGO
-    const mpResult = await pagosService.crearPreference({
-      turnoId,
-      localId,
-      servicioNombre,
-      monto: precio,
-      tipo: 'seña',
-      porcentajeSeña: 30, // Cobramos el 30% de seña
-    });
-
+    // ✅ COMMIT ACÁ - liberamos los locks ANTES de llamar a Mercado Pago
     await connection.commit();
-
-    return {
-      id: turnoId,
-      telefono,
-      localNombre,
-      servicioNombre,
-      localId,
-      mpLink: mpResult.initPoint, // ✅ 8. Devolvemos el link al controller
-    };
 
   } catch (error: any) {
     await connection.rollback();
@@ -133,5 +123,33 @@ export const createTurnoPublico = async (data: any) => {
     throw error;
   } finally {
     connection.release();
+  }
+
+  // 💳 7. GENERAR LINK DE PAGO DE MERCADO PAGO
+  // Esto ahora corre SIN transacción abierta y SIN locks de la tabla turnos,
+  // así que no puede haber lock wait timeout ni deadlock con pagosService.
+  try {
+    const mpResult = await pagosService.crearPreference({
+      turnoId,
+      localId: localIdFinal,
+      servicioNombre,
+      monto: precio,
+      tipo: 'seña',
+      porcentajeSeña: 30,
+    });
+
+    return {
+      id: turnoId,
+      telefono,
+      localNombre,
+      servicioNombre,
+      localId: localIdFinal,
+      mpLink: mpResult.initPoint,
+    };
+  } catch (mpError: any) {
+    console.error("Error generando link de pago:", mpError);
+    // El turno ya quedó creado en estado 'pendiente_pago'.
+    // El cleanup de 15 minutos en getDisponibilidad lo va a cancelar solo.
+    throw new Error("Turno reservado, pero no se pudo generar el link de pago. Por favor intentá de nuevo.");
   }
 };
