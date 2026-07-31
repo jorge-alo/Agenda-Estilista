@@ -22,6 +22,7 @@ export const createTurnoPublico = async (data: any) => {
   let servicioNombre: string;
   let localIdFinal: number;
   let precio: number;
+  let mpAccessToken: string
 
   try {
     await connection.beginTransaction();
@@ -39,6 +40,14 @@ export const createTurnoPublico = async (data: any) => {
     localNombre = localRows[0].nombre;
     localIdFinal = localRows[0].id;
     telefono = localRows[0].telefono;
+    mpAccessToken = localRows[0].mp_access_token; // ✅ NUEVO
+
+    // ✅ Validar que el local tenga configurado Mercado Pago
+    if (!mpAccessToken) {
+      throw new Error(
+        "Este local aún no ha configurado los pagos online. Contactá al administrador."
+      );
+    }
 
     // 🔥 2. obtener duración y PRECIO del servicio
     const [servicioRows]: any = await connection.query(
@@ -130,13 +139,14 @@ export const createTurnoPublico = async (data: any) => {
   // así que no puede haber lock wait timeout ni deadlock con pagosService.
   try {
     const mpResult = await pagosService.crearPreference({
-      turnoId,
-      localId: localIdFinal,
-      servicioNombre,
-      monto: precio,
-      tipo: 'seña',
-      porcentajeSeña: 30,
-    });
+  turnoId,
+  localId: localIdFinal,
+  servicioNombre,
+  monto: precio,
+  tipo: "seña",
+  porcentajeSeña: 30,
+  accessToken: mpAccessToken, // ✅ Token del local específico
+});
 
     return {
       id: turnoId,
