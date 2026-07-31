@@ -29,7 +29,7 @@ export const createTurnoPublico = async (data: any) => {
 
     // 🔎 1. buscar local
     const [localRows]: any = await connection.query(
-      `SELECT id, telefono, nombre FROM locales WHERE slug = ?`,
+      `SELECT id, telefono, nombre, mp_access_token FROM locales WHERE slug = ?`,
       [slug]
     );
 
