@@ -137,16 +137,24 @@ export const createTurnoPublico = async (data: any) => {
   // 💳 7. GENERAR LINK DE PAGO DE MERCADO PAGO
   // Esto ahora corre SIN transacción abierta y SIN locks de la tabla turnos,
   // así que no puede haber lock wait timeout ni deadlock con pagosService.
+
+  // 💳 7. GENERAR LINK DE PAGO usando el token del local
+  console.log("🔑 Token del local (primeros 20 chars):", mpAccessToken?.substring(0, 20) + "...");
+  console.log("💰 Monto del servicio:", precio);
+  console.log("🎫 Turno ID:", turnoId);
   try {
     const mpResult = await pagosService.crearPreference({
-  turnoId,
-  localId: localIdFinal,
-  servicioNombre,
-  monto: precio,
-  tipo: "seña",
-  porcentajeSeña: 30,
-  accessToken: mpAccessToken, // ✅ Token del local específico
-});
+      turnoId,
+      localId: localIdFinal,
+      servicioNombre,
+      monto: precio,
+      tipo: "seña",
+      porcentajeSeña: 30,
+      accessToken: mpAccessToken, // ✅ Token del local específico
+    });
+
+    console.log("✅ Link de pago generado:", mpResult.initPoint);
+    console.log("✅ Pago ID:", mpResult.pagoId);
 
     return {
       id: turnoId,
@@ -156,10 +164,10 @@ export const createTurnoPublico = async (data: any) => {
       localId: localIdFinal,
       mpLink: mpResult.initPoint,
     };
-  } catch (mpError: any) {
-    console.error("Error generando link de pago:", mpError);
-    // El turno ya quedó creado en estado 'pendiente_pago'.
-    // El cleanup de 15 minutos en getDisponibilidad lo va a cancelar solo.
+  } catch (error: any) {
+    console.error("❌ ERROR GENERANDO LINK DE PAGO:", error);
+    console.error("❌ Detalle del error:", error.message);
+    console.error("❌ Código de error:", error.code);
     throw new Error("Turno reservado, pero no se pudo generar el link de pago. Por favor intentá de nuevo.");
   }
 };
