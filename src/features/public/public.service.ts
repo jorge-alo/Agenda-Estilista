@@ -171,3 +171,22 @@ export const createTurnoPublico = async (data: any) => {
     throw new Error("Turno reservado, pero no se pudo generar el link de pago. Por favor intentá de nuevo.");
   }
 };
+
+export const obtenerTurnoPublico = async (turnoId: number) => {
+  const [turnos]: any = await pool.query(
+    `SELECT t.fecha, t.hora, t.cliente_nombre, t.estado,
+            s.nombre AS servicioNombre,
+            l.nombre AS localNombre
+     FROM turnos t
+     JOIN servicios s ON t.servicio_id = s.id
+     JOIN locales l ON t.local_id = l.id
+     WHERE t.id = ?`,
+    [turnoId]
+  );
+
+  if (turnos.length === 0) {
+    throw new Error("Turno no encontrado");
+  }
+
+  return turnos[0];
+};

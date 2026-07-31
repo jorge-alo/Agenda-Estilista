@@ -47,3 +47,25 @@ export const reservar = async (req: Request, res: Response) => {
     res.status(400).json({ error: error.message });
   }
 };
+
+// ✅ Controller delgado: solo valida el ID y llama al servicio
+export const obtenerTurno = async (req: Request, res: Response) => {
+  try {
+    const turnoId = parseInt(req.params.id as string, 10);
+    
+    if (isNaN(turnoId)) {
+      return res.status(400).json({ error: "ID de turno inválido" });
+    }
+
+    // Llamamos a la lógica que ahora vive en el servicio
+    const turno = await turnoService.obtenerTurnoPublico(turnoId);
+    
+    res.json(turno);
+  } catch (error: any) {
+    if (error.message === "Turno no encontrado") {
+      return res.status(404).json({ error: error.message });
+    }
+    console.error("Error obteniendo turno:", error);
+    res.status(500).json({ error: "Error interno al obtener el turno" });
+  }
+};
