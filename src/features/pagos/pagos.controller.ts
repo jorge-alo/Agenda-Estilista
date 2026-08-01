@@ -60,7 +60,7 @@ export const crearLinkPago = async (req: Request, res: Response) => {
 
 export const webhook = async (req: Request, res: Response) => {
   console.log("📥 WEBHOOK RECIBIDO - BODY:", JSON.stringify(req.body, null, 2));
-  
+
   try {
     const { type, data, topic, resource, action } = req.body;
 
@@ -85,12 +85,12 @@ export const webhook = async (req: Request, res: Response) => {
 
     // Obtener información del pago desde MP
     const payment: any = await obtenerPaymentInfo(paymentId);
-    
+
     if (!payment) {
       console.error("❌ [2] FALLO: No se pudo obtener la info del pago de MP. Revisa tu MP_ACCESS_TOKEN global en Railway.");
       return res.status(200).send('OK'); // Respondemos 200 igual para evitar bucles de reintentos
     }
-    
+
     console.log("✅ [3] Info del pago obtenida. Status:", payment.status);
 
     // ✅ Validar que external_reference exista
@@ -99,22 +99,33 @@ export const webhook = async (req: Request, res: Response) => {
       console.warn("⚠️ [4] Webhook recibido sin external_reference válido:", externalReference);
       return res.status(200).send('OK');
     }
-    
+
     const turnoId = parseInt(externalReference.replace('turno-', ''), 10);
     console.log("🎫 [5] Turno ID extraído:", turnoId);
 
     // ✅ Acceder a preference_id de forma segura
     const preferenceId = payment.preference_id || '';
-    console.log("🔗 [6] Preference ID:", preferenceId);
-    
-    // Buscar el pago en nuestra BD
-    const pago = await pagosService.obtenerPagoPorPreferenceId(preferenceId);
+    console.log("🔗 [6] Preference ID:", preferenceId || "(Vacío, usando fallback)");
+
+    // 🛡️ FALLBACK: Buscar el pago en nuestra BD
+    let pago: any = null;
+
+    if (preferenceId) {
+      pago = await pagosService.obtenerPagoPorPreferenceId(preferenceId);
+    }
+
+    // Si no se encontró por preference_id (o vino vacío), buscamos por turno_id
+    if (!pago) {
+      console.log("⚠️ [7] Buscando pago por turno_id:", turnoId);
+      pago = await pagosService.obtenerPagoPorTurnoId(turnoId);
+    }
 
     if (!pago) {
-      console.error("❌ [7] FALLO: Pago no encontrado en BD para preference_id:", preferenceId);
-      return res.status(200).send('OK');
+      console.error("❌ [8] FALLO: Pago no encontrado en BD para turno_id:", turnoId);
+      return res.status(200).send('OK'); // Respondemos 200 para evitar reintentos infinitos de MP
     }
-    console.log("✅ [8] Pago encontrado en BD. ID:", pago.id);
+
+    console.log("✅ [9] Pago encontrado en BD. ID:", pago.id);
 
     // Actualizar estado según el status del pago
     const status = payment.status;
@@ -162,7 +173,7 @@ const obtenerPaymentInfo = async (paymentId: string) => {
 
     const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
     const paymentClient = new Payment(client);
-    
+
     const payment = await paymentClient.get({ id: paymentId });
     return payment;
   } catch (error: any) {
