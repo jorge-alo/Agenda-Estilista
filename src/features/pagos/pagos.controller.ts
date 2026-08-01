@@ -62,91 +62,101 @@ export const webhook = async (req: Request, res: Response) => {
   console.log("📥 WEBHOOK RECIBIDO - BODY:", JSON.stringify(req.body, null, 2));
   
   try {
-    // MP a veces envía 'topic' en lugar de 'type' dependiendo de la config
-    const { type, data, topic } = req.body;
-    const eventType = type || topic;
+    const { type, data, topic, resource, action } = req.body;
 
-    if (eventType === 'payment') {
-      const paymentId = data.id;
-      console.log("💳 [1] Procesando pago ID:", paymentId);
+    // 🛡️ NORMALIZACIÓN: MP envía el ID de formas distintas. Lo unificamos aquí.
+    let paymentId: string | undefined;
 
-      // Obtener información del pago desde MP
-      const payment: any = await obtenerPaymentInfo(paymentId);
-      
-      if (!payment) {
-        console.error("❌ [2] FALLO: No se pudo obtener la info del pago de MP. Revisa tu MP_ACCESS_TOKEN global en Railway.");
-        return res.status(400).json({ error: 'Pago no encontrado en MP' });
-      }
-      
-      console.log("✅ [3] Info del pago obtenida. Status:", payment.status);
-
-      // ✅ FIX 1: Validar que external_reference exista
-      const externalReference = payment.external_reference;
-      if (!externalReference || !externalReference.startsWith('turno-')) {
-        console.warn("⚠️ [4] Webhook recibido sin external_reference válido:", externalReference);
-        return res.status(400).json({ error: 'Referencia externa inválida' });
-      }
-      
-      const turnoId = parseInt(externalReference.replace('turno-', ''), 10);
-      console.log("🎫 [5] Turno ID extraído:", turnoId);
-
-      // ✅ FIX 2: Acceder a preference_id de forma segura
-      const preferenceId = payment.preference_id || '';
-      console.log("🔗 [6] Preference ID:", preferenceId);
-      
-      // Buscar el pago en nuestra BD
-      const pago = await pagosService.obtenerPagoPorPreferenceId(preferenceId);
-
-      if (!pago) {
-        console.error("❌ [7] FALLO: Pago no encontrado en BD para preference_id:", preferenceId);
-        return res.status(404).json({ error: 'Pago no encontrado en BD' });
-      }
-      console.log("✅ [8] Pago encontrado en BD. ID:", pago.id);
-
-      // Actualizar estado según el status del pago
-      const status = payment.status;
-      let nuevoEstado: 'aprobado' | 'rechazado' | 'cancelado' = 'rechazado';
-      let nuevoEstadoTurno = 'activo';
-
-      if (status === 'approved') {
-        nuevoEstado = 'aprobado';
-        console.log("🟢 [9] Pago APROBADO. Actualizando turno a 'activo'...");
-        await pool.query("UPDATE turnos SET estado = 'activo' WHERE id = ?", [turnoId]);
-      } else if (status === 'cancelled' || status === 'rejected') {
-        nuevoEstado = status === 'cancelled' ? 'cancelado' : 'rechazado';
-        nuevoEstadoTurno = 'cancelado';
-        console.log("🔴 [9] Pago RECHAZADO/CANCELADO. Actualizando turno a 'cancelado'...");
-        await pool.query("UPDATE turnos SET estado = 'cancelado' WHERE id = ?", [turnoId]);
-      }
-
-      // Actualizar el registro de pago en BD
-      await pagosService.actualizarEstadoPago(
-        pago.id,
-        nuevoEstado,
-        String(payment.id),
-        status ?? null,
-        payment.status_detail ?? null
-      );
-
-      console.log(`🎉 [10] PROCESO COMPLETADO. Pago ${paymentId} procesado. Estado final: ${nuevoEstado}`);
-    } else {
-      console.log("ℹ️ Webhook ignorado (no es un pago). Tipo recibido:", eventType);
+    if (type === 'payment' && data?.id) {
+      paymentId = data.id; // Formato nuevo
+    } else if (topic === 'payment' && resource) {
+      paymentId = resource; // Formato legacy (el que te está llegando)
+    } else if (action === 'payment.created' && data?.id) {
+      paymentId = data.id; // Formato alternativo
     }
+
+    // Si no es un evento de pago con ID, ignoramos y respondemos 200 para que MP no insista
+    if (!paymentId) {
+      console.log("ℹ️ Webhook ignorado (no es un evento de pago con ID válido).");
+      return res.status(200).send('OK');
+    }
+
+    console.log("💳 [1] Procesando pago ID:", paymentId);
+
+    // Obtener información del pago desde MP
+    const payment: any = await obtenerPaymentInfo(paymentId);
+    
+    if (!payment) {
+      console.error("❌ [2] FALLO: No se pudo obtener la info del pago de MP. Revisa tu MP_ACCESS_TOKEN global en Railway.");
+      return res.status(200).send('OK'); // Respondemos 200 igual para evitar bucles de reintentos
+    }
+    
+    console.log("✅ [3] Info del pago obtenida. Status:", payment.status);
+
+    // ✅ Validar que external_reference exista
+    const externalReference = payment.external_reference;
+    if (!externalReference || !externalReference.startsWith('turno-')) {
+      console.warn("⚠️ [4] Webhook recibido sin external_reference válido:", externalReference);
+      return res.status(200).send('OK');
+    }
+    
+    const turnoId = parseInt(externalReference.replace('turno-', ''), 10);
+    console.log("🎫 [5] Turno ID extraído:", turnoId);
+
+    // ✅ Acceder a preference_id de forma segura
+    const preferenceId = payment.preference_id || '';
+    console.log("🔗 [6] Preference ID:", preferenceId);
+    
+    // Buscar el pago en nuestra BD
+    const pago = await pagosService.obtenerPagoPorPreferenceId(preferenceId);
+
+    if (!pago) {
+      console.error("❌ [7] FALLO: Pago no encontrado en BD para preference_id:", preferenceId);
+      return res.status(200).send('OK');
+    }
+    console.log("✅ [8] Pago encontrado en BD. ID:", pago.id);
+
+    // Actualizar estado según el status del pago
+    const status = payment.status;
+    let nuevoEstado: 'aprobado' | 'rechazado' | 'cancelado' = 'rechazado';
+    let nuevoEstadoTurno = 'activo';
+
+    if (status === 'approved') {
+      nuevoEstado = 'aprobado';
+      console.log("🟢 [9] Pago APROBADO. Actualizando turno a 'activo'...");
+      await pool.query("UPDATE turnos SET estado = 'activo' WHERE id = ?", [turnoId]);
+    } else if (status === 'cancelled' || status === 'rejected') {
+      nuevoEstado = status === 'cancelled' ? 'cancelado' : 'rechazado';
+      nuevoEstadoTurno = 'cancelado';
+      console.log("🔴 [9] Pago RECHAZADO/CANCELADO. Actualizando turno a 'cancelado'...");
+      await pool.query("UPDATE turnos SET estado = 'cancelado' WHERE id = ?", [turnoId]);
+    }
+
+    // Actualizar el registro de pago en BD
+    await pagosService.actualizarEstadoPago(
+      pago.id,
+      nuevoEstado,
+      String(payment.id),
+      status ?? null,
+      payment.status_detail ?? null
+    );
+
+    console.log(`🎉 [10] PROCESO COMPLETADO. Pago ${paymentId} procesado. Estado final: ${nuevoEstado}`);
 
     // Siempre responder 200 para que MP no reenvíe la notificación
     res.status(200).send('OK');
   } catch (error: any) {
     console.error('💥 [ERROR CRÍTICO] En webhook:', error);
-    res.status(500).json({ error: 'Error procesando webhook' });
+    res.status(200).send('OK'); // Siempre 200 aunque haya error interno, para frenar los reintentos de MP
   }
 };
 
 // Función helper para obtener info del pago desde MP
 const obtenerPaymentInfo = async (paymentId: string) => {
   try {
-    // Verificamos que el token exista antes de intentar la llamada
+    // ⚠️ CRUCIAL: Verificamos que el token global exista para poder CONSULTAR a MP
     if (!process.env.MP_ACCESS_TOKEN) {
-      console.error("⚠️ MP_ACCESS_TOKEN no está definido en las variables de entorno.");
+      console.error("⚠️ MP_ACCESS_TOKEN no está definido en las variables de entorno de Railway.");
       return null;
     }
 
