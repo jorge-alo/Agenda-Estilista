@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { pool } from '../../config/db';
 import { pagosService } from './pagos.service';
 import { MercadoPagoConfig, Payment } from 'mercadopago';
+import { sendTurnoConfirmado } from '../notifications/application/sendWhatsAppNotification';
+import { formatPhoneAR } from '../../helpers/formatPhoneAR';
 
 // Inicializamos el cliente de MP una sola vez para reutilizarlo
 const mpClient = new MercadoPagoConfig({
@@ -68,14 +70,13 @@ export const webhook = async (req: Request, res: Response) => {
     let paymentId: string | undefined;
 
     if (type === 'payment' && data?.id) {
-      paymentId = data.id; // Formato nuevo
+      paymentId = data.id;
     } else if (topic === 'payment' && resource) {
-      paymentId = resource; // Formato legacy (el que te está llegando)
+      paymentId = resource;
     } else if (action === 'payment.created' && data?.id) {
-      paymentId = data.id; // Formato alternativo
+      paymentId = data.id;
     }
 
-    // Si no es un evento de pago con ID, ignoramos y respondemos 200 para que MP no insista
     if (!paymentId) {
       console.log("ℹ️ Webhook ignorado (no es un evento de pago con ID válido).");
       return res.status(200).send('OK');
@@ -83,17 +84,15 @@ export const webhook = async (req: Request, res: Response) => {
 
     console.log("💳 [1] Procesando pago ID:", paymentId);
 
-    // Obtener información del pago desde MP
     const payment: any = await obtenerPaymentInfo(paymentId);
 
     if (!payment) {
-      console.error("❌ [2] FALLO: No se pudo obtener la info del pago de MP. Revisa tu MP_ACCESS_TOKEN global en Railway.");
-      return res.status(200).send('OK'); // Respondemos 200 igual para evitar bucles de reintentos
+      console.error("❌ [2] FALLO: No se pudo obtener la info del pago de MP.");
+      return res.status(200).send('OK');
     }
 
     console.log("✅ [3] Info del pago obtenida. Status:", payment.status);
 
-    // ✅ Validar que external_reference exista
     const externalReference = payment.external_reference;
     if (!externalReference || !externalReference.startsWith('turno-')) {
       console.warn("⚠️ [4] Webhook recibido sin external_reference válido:", externalReference);
@@ -103,18 +102,15 @@ export const webhook = async (req: Request, res: Response) => {
     const turnoId = parseInt(externalReference.replace('turno-', ''), 10);
     console.log("🎫 [5] Turno ID extraído:", turnoId);
 
-    // ✅ Acceder a preference_id de forma segura
     const preferenceId = payment.preference_id || '';
     console.log("🔗 [6] Preference ID:", preferenceId || "(Vacío, usando fallback)");
 
-    // 🛡️ FALLBACK: Buscar el pago en nuestra BD
     let pago: any = null;
 
     if (preferenceId) {
       pago = await pagosService.obtenerPagoPorPreferenceId(preferenceId);
     }
 
-    // Si no se encontró por preference_id (o vino vacío), buscamos por turno_id
     if (!pago) {
       console.log("⚠️ [7] Buscando pago por turno_id:", turnoId);
       pago = await pagosService.obtenerPagoPorTurnoId(turnoId);
@@ -122,28 +118,65 @@ export const webhook = async (req: Request, res: Response) => {
 
     if (!pago) {
       console.error("❌ [8] FALLO: Pago no encontrado en BD para turno_id:", turnoId);
-      return res.status(200).send('OK'); // Respondemos 200 para evitar reintentos infinitos de MP
+      return res.status(200).send('OK');
     }
 
     console.log("✅ [9] Pago encontrado en BD. ID:", pago.id);
 
-    // Actualizar estado según el status del pago
     const status = payment.status;
     let nuevoEstado: 'aprobado' | 'rechazado' | 'cancelado' = 'rechazado';
-    let nuevoEstadoTurno = 'activo';
 
     if (status === 'approved') {
       nuevoEstado = 'aprobado';
-      console.log("🟢 [9] Pago APROBADO. Actualizando turno a 'activo'...");
+      console.log("🟢 [10] Pago APROBADO. Actualizando turno a 'activo'...");
       await pool.query("UPDATE turnos SET estado = 'activo' WHERE id = ?", [turnoId]);
+
+      // ✅ NUEVO: Enviar WhatsApp de confirmación AHORA que el pago fue aprobado
+      try {
+        console.log("📱 [11] Obteniendo datos del turno para enviar WhatsApp...");
+        
+        const [turnos]: any = await pool.query(
+          `SELECT t.cliente_nombre, t.cliente_telefono, t.fecha, t.hora,
+                  s.nombre AS servicioNombre, 
+                  l.nombre AS localNombre, 
+                  l.telefono AS localTelefono, 
+                  l.id AS local_id
+           FROM turnos t
+           JOIN servicios s ON t.servicio_id = s.id
+           JOIN locales l ON t.local_id = l.id
+           WHERE t.id = ?`,
+          [turnoId]
+        );
+
+        if (turnos.length > 0) {
+          const t = turnos[0];
+          console.log("📱 [12] Enviando WhatsApp de confirmación a:", t.cliente_telefono);
+          
+          await sendTurnoConfirmado({
+            clienteNombre: t.cliente_nombre,
+            clienteTelefono: formatPhoneAR(t.cliente_telefono),
+            fecha: new Date(t.fecha + "T00:00:00").toLocaleDateString("es-AR"),
+            hora: t.hora,
+            servicio: t.servicioNombre,
+            localNombre: t.localNombre,
+            localTelefono: formatPhoneAR(t.localTelefono),
+            localId: String(t.local_id)
+          });
+          
+          console.log("✅ [13] WhatsApp de confirmación enviado exitosamente post-pago.");
+        } else {
+          console.warn("⚠️ [13] Turno no encontrado para enviar WhatsApp.");
+        }
+      } catch (whatsappErr) {
+        console.error("❌ [13] Error enviando WhatsApp post-pago (no bloqueante):", whatsappErr);
+      }
+
     } else if (status === 'cancelled' || status === 'rejected') {
       nuevoEstado = status === 'cancelled' ? 'cancelado' : 'rechazado';
-      nuevoEstadoTurno = 'cancelado';
-      console.log("🔴 [9] Pago RECHAZADO/CANCELADO. Actualizando turno a 'cancelado'...");
+      console.log("🔴 [10] Pago RECHAZADO/CANCELADO. Actualizando turno a 'cancelado'...");
       await pool.query("UPDATE turnos SET estado = 'cancelado' WHERE id = ?", [turnoId]);
     }
 
-    // Actualizar el registro de pago en BD
     await pagosService.actualizarEstadoPago(
       pago.id,
       nuevoEstado,
@@ -152,13 +185,12 @@ export const webhook = async (req: Request, res: Response) => {
       payment.status_detail ?? null
     );
 
-    console.log(`🎉 [10] PROCESO COMPLETADO. Pago ${paymentId} procesado. Estado final: ${nuevoEstado}`);
+    console.log(`🎉 [14] PROCESO COMPLETADO. Pago ${paymentId} procesado. Estado final: ${nuevoEstado}`);
 
-    // Siempre responder 200 para que MP no reenvíe la notificación
     res.status(200).send('OK');
   } catch (error: any) {
     console.error('💥 [ERROR CRÍTICO] En webhook:', error);
-    res.status(200).send('OK'); // Siempre 200 aunque haya error interno, para frenar los reintentos de MP
+    res.status(200).send('OK');
   }
 };
 
