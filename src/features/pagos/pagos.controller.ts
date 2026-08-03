@@ -47,6 +47,7 @@ export const crearLinkPago = async (req: Request, res: Response) => {
       monto: turno.precio,
       tipo: tipo || 'seña',
       porcentajeSeña: porcentajeSeña || 30,
+      slug: turno.slug,
     });
 
     res.json({

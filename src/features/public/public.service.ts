@@ -135,6 +135,7 @@ export const createTurnoPublico = async (data: any) => {
         tipo: "seña",
         porcentajeSeña: 30,
         accessToken: mpAccessToken,
+         slug,
       });
 
       return {

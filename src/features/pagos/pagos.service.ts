@@ -9,6 +9,7 @@ interface CrearPagoData {
   tipo: "seña" | "completo";
   porcentajeSeña?: number;
   accessToken?: string; // ✅ Token del local (opcional)
+  slug: string;
 }
 
 export const pagosService = {
@@ -21,6 +22,7 @@ export const pagosService = {
       tipo,
       porcentajeSeña = 30,
       accessToken,
+      slug,
     } = data;
 
     // ✅ Usar el token del local si existe, sino el global (fallback para testing)
@@ -52,9 +54,9 @@ export const pagosService = {
           },
         ],
         back_urls: {
-          success: `${process.env.FRONTEND_URL}/pago-exitoso?turno=${turnoId}`,
-          failure: `${process.env.FRONTEND_URL}/pago-fallido?turno=${turnoId}`,
-          pending: `${process.env.FRONTEND_URL}/pago-pendiente?turno=${turnoId}`,
+          success: `${process.env.FRONTEND_URL}/pago-exitoso?turno=${turnoId}&slug=${slug}`,
+          failure: `${process.env.FRONTEND_URL}/pago-fallido?turno=${turnoId}&slug=${slug}`,
+          pending: `${process.env.FRONTEND_URL}/pago-pendiente?turno=${turnoId}&slug=${slug}`,
         },
         auto_return: "approved",
         external_reference: `turno-${turnoId}`,
