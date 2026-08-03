@@ -19,6 +19,7 @@ export const updateConfiguracion = async (
     descripcion?: string;
     horario_apertura?: string;
     horario_cierre?: string;
+    requiere_sena?: boolean; // ✅ Agregado
   }
 ) => {
   const fields = [];
@@ -30,9 +31,14 @@ export const updateConfiguracion = async (
   if (data.descripcion !== undefined) { fields.push("descripcion = ?"); values.push(data.descripcion); }
   if (data.horario_apertura !== undefined) { fields.push("horario_apertura = ?"); values.push(data.horario_apertura); }
   if (data.horario_cierre !== undefined) { fields.push("horario_cierre = ?"); values.push(data.horario_cierre); }
+  
+  // ✅ Agregado:
+  if (data.requiere_sena !== undefined) { 
+    fields.push("requiere_sena = ?"); 
+    values.push(data.requiere_sena ? 1 : 0); // MySQL usa 1 para true, 0 para false
+  }
 
   if (fields.length === 0) throw new Error("No hay campos para actualizar");
-
   values.push(localId);
 
   await pool.query(
