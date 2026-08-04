@@ -73,9 +73,9 @@ export const createTurno = async (data: any) => {
       `
       INSERT INTO turnos (
         fecha, hora, hora_fin, estilista_id, servicio_id,
-        local_id, cliente_nombre, cliente_telefono, cliente_id
+        local_id, cliente_nombre, cliente_telefono, cliente_id, estado
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'activo')
       `,
       [
         fecha, hora, hora_fin, estilista_id, servicio_id,
