@@ -146,6 +146,18 @@ export const getDisponibilidad = async (
     throw new Error("Local no encontrado");
   }
 
+  const local = localRows[0];
+
+  // ✅ NUEVO: Validar si el local está bloqueado por el SuperAdmin o por falta de pago
+  const hoy = new Date();
+  const vencimiento = local.suscripcion_vencimiento ? new Date(local.suscripcion_vencimiento) : null;
+  const estaVencido = vencimiento && hoy > vencimiento;
+
+  if (local.activo === 0 || local.suscripcion_estado === 'vencido' || estaVencido) {
+    // Lanzamos un error específico que el frontend podrá reconocer
+    throw new Error("LOCAL_SUSCRIPCION_VENCIDA");
+  }
+
   const localId = localRows[0].id;
   const nombreLocal = localRows[0].nombre
 
@@ -224,7 +236,7 @@ export const getDisponibilidad = async (
     };
   }
 
-    // 🧹 4. ✅ LIMPIEZA RÁPIDA: Cancelar turnos pendientes de pago con más de 15 minutos
+  // 🧹 4. ✅ LIMPIEZA RÁPIDA: Cancelar turnos pendientes de pago con más de 15 minutos
   // Esto libera los horarios "fantasma" antes de calcular la disponibilidad
   await pool.query(
     `UPDATE turnos 
@@ -237,7 +249,7 @@ export const getDisponibilidad = async (
     [localId, fecha, estilistaId]
   );
 
-    // 📆 5. Turnos existentes (✅ CORREGIDO: incluye 'pendiente_pago' para bloquear el horario mientras el cliente paga)
+  // 📆 5. Turnos existentes (✅ CORREGIDO: incluye 'pendiente_pago' para bloquear el horario mientras el cliente paga)
   const [turnos]: any = await pool.query(
     `SELECT hora, hora_fin 
      FROM turnos 
