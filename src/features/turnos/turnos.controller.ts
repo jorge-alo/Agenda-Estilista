@@ -92,8 +92,13 @@ export const disponibilidad = async (req: Request, res: Response) => {
     );
 
     res.json(data);
-  } catch (error) {
+  } catch (error: any) {
     console.log(error);
+
+     // ✅ NUEVO: Si el error es el de suscripción, lo pasamos tal cual con estado 403
+    if (error.message === "LOCAL_SUSCRIPCION_VENCIDA") {
+      return res.status(403).json({ error: "LOCAL_SUSCRIPCION_VENCIDA" });
+    }
     res.status(500).json({ error: "Error interno" });
   }
 };
