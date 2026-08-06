@@ -138,7 +138,7 @@ export const getDisponibilidad = async (
 ) => {
   // 🔍 1. Obtener local
   const [localRows]: any = await pool.query(
-    "SELECT id, nombre, descripcion, direccion, telefono, horario_apertura, horario_cierre FROM locales WHERE slug = ?",
+    "SELECT id, nombre, descripcion, direccion, telefono, horario_apertura, horario_cierre, activo, suscripcion_estado, suscripcion_vencimiento  FROM locales WHERE slug = ?",
     [slug]
   );
 
@@ -151,7 +151,7 @@ export const getDisponibilidad = async (
   // ✅ NUEVO: Validar si el local está bloqueado por el SuperAdmin o por falta de pago
   const hoy = new Date();
   const vencimiento = local.suscripcion_vencimiento ? new Date(local.suscripcion_vencimiento) : null;
-  const estaVencido = vencimiento && hoy > vencimiento;
+  const estaVencido = vencimiento ? hoy > vencimiento : false;
 
    // 🕵️‍♂️ RASTREADOR 1: Ver qué datos trae realmente de la BD
   console.log("🔍 DEBUG BACKEND SERVICE - DATOS DEL LOCAL:", {
