@@ -38,7 +38,7 @@ export const suscripcionService = {
     }
 
     const localNombre = locales[0].nombre || "Servicio de Agenda";
-    const MONTO_SUSCRIPCION = 10000; // ⚠️ Cambia esto por el precio real de tu suscripción
+    const MONTO_SUSCRIPCION = 100; // ⚠️ Cambia esto por el precio real de tu suscripción
 
     // 2. Crear preferencia de pago
     const preference = await preferenceClient.create({
