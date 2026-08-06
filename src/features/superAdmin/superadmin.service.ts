@@ -27,10 +27,11 @@ export const registerUser = async (
       .replace(/\s+/g, "-");
 
     // 🏪 crear local
-    const [localResult]: any = await connection.query(
-      "INSERT INTO locales (nombre, slug, telefono) VALUES (?, ?, ?)",
-      [nombreLocal, slug, telefono]
-    );
+   const [localResult]: any = await connection.query(
+  `INSERT INTO locales (nombre, slug, telefono, suscripcion_estado, suscripcion_vencimiento) 
+   VALUES (?, ?, ?, 'activo', DATE_ADD(CURDATE(), INTERVAL 30 DAY))`,
+  [nombreLocal, slug, telefono]
+);
 
     const localId = localResult.insertId;
     console.log("Valor de localId", localId);
