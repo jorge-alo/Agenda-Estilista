@@ -153,6 +153,15 @@ export const getDisponibilidad = async (
   const vencimiento = local.suscripcion_vencimiento ? new Date(local.suscripcion_vencimiento) : null;
   const estaVencido = vencimiento && hoy > vencimiento;
 
+   // 🕵️‍♂️ RASTREADOR 1: Ver qué datos trae realmente de la BD
+  console.log("🔍 DEBUG BACKEND SERVICE - DATOS DEL LOCAL:", {
+    activo: local.activo,
+    estado: local.suscripcion_estado,
+    vencimientoDB: local.suscripcion_vencimiento,
+    fechaHoy: hoy.toISOString(),
+    estaVencido: estaVencido
+  });
+
   if (local.activo === 0 || local.suscripcion_estado === 'vencido' || estaVencido) {
     // Lanzamos un error específico que el frontend podrá reconocer
     throw new Error("LOCAL_SUSCRIPCION_VENCIDA");

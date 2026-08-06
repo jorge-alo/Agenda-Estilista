@@ -93,10 +93,11 @@ export const disponibilidad = async (req: Request, res: Response) => {
 
     res.json(data);
   } catch (error: any) {
-    console.log(error);
+     console.log("🚨 DEBUG BACKEND CONTROLLER - ERROR CAPTURADO:", error.message);
 
      // ✅ NUEVO: Si el error es el de suscripción, lo pasamos tal cual con estado 403
     if (error.message === "LOCAL_SUSCRIPCION_VENCIDA") {
+      console.log("✅ DEBUG: Enviando 403 al frontend");
       return res.status(403).json({ error: "LOCAL_SUSCRIPCION_VENCIDA" });
     }
     res.status(500).json({ error: "Error interno" });
