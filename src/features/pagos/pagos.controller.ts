@@ -95,6 +95,33 @@ export const webhook = async (req: Request, res: Response) => {
     console.log("✅ [3] Info del pago obtenida. Status:", payment.status);
 
     const externalReference = payment.external_reference;
+    
+    // ✅ NUEVO: Detectar si es un pago de SUSCRIPCIÓN del local
+    if (externalReference && externalReference.startsWith('suscripcion-')) {
+      const localId = parseInt(externalReference.replace('suscripcion-', ''), 10);
+      console.log("💼 [SUSCRIPCIÓN] Pago recibido para el local ID:", localId);
+
+      if (payment.status === 'approved') {
+        console.log("✅ [SUSCRIPCIÓN] Pago aprobado. Renovando suscripción por 30 días...");
+        
+        await pool.query(
+          `UPDATE locales 
+           SET suscripcion_estado = 'activo', 
+               suscripcion_vencimiento = DATE_ADD(CURDATE(), INTERVAL 30 DAY) 
+           WHERE id = ?`,
+          [localId]
+        );
+        
+        console.log("✅ [SUSCRIPCIÓN] Local renovado exitosamente por 30 días.");
+      } else {
+        console.log(`ℹ️ [SUSCRIPCIÓN] Pago no aprobado. Status: ${payment.status}`);
+      }
+      
+      // Respondemos 200 y terminamos, no es un turno de cliente
+      return res.status(200).send('OK');
+    }
+
+    // Si no empieza con 'turno-', ignoramos
     if (!externalReference || !externalReference.startsWith('turno-')) {
       console.warn("⚠️ [4] Webhook recibido sin external_reference válido:", externalReference);
       return res.status(200).send('OK');
