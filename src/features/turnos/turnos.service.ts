@@ -153,7 +153,7 @@ export const getDisponibilidad = async (
   const vencimiento = local.suscripcion_vencimiento ? new Date(local.suscripcion_vencimiento) : null;
   const estaVencido = vencimiento ? hoy > vencimiento : false;
 
-   // 🕵️‍♂️ RASTREADOR 1: Ver qué datos trae realmente de la BD
+  // 🕵️‍♂️ RASTREADOR 1: Ver qué datos trae realmente de la BD
   console.log("🔍 DEBUG BACKEND SERVICE - DATOS DEL LOCAL:", {
     activo: local.activo,
     estado: local.suscripcion_estado,
@@ -303,6 +303,15 @@ export const getDisponibilidad = async (
   //🧠 8. Calcular disponibilidad REAL (con solapamiento)
   const disponibles: string[] = [];
 
+  // ✅ NUEVO: Preparar variables para filtrar horarios pasados
+  const fechaSeleccionada = new Date(fecha + "T00:00:00"); // Hora local
+  const hoyMedianoche = new Date();
+  hoyMedianoche.setHours(0, 0, 0, 0); // Resetear a medianoche para comparar solo fechas
+  const esHoy = fechaSeleccionada.getTime() === hoy.getTime();
+
+  const ahora = new Date();
+  const minutosAhora = ahora.getHours() * 60 + ahora.getMinutes();
+
   for (const horaInicio of horarios) {
     const horaFin = sumarMinutos(horaInicio, duracion);
 
@@ -317,6 +326,16 @@ export const getDisponibilidad = async (
     );
 
     if (!dentroDelHorario) continue; // ← descartamos este slot
+
+    // ✅ NUEVO: Si la fecha es HOY, excluir horarios que ya pasaron
+    if (esHoy) {
+      const [h, m] = horaInicio.split(":").map(Number);
+      const minutosSlot = h * 60 + m; // Ej: "17:30" = 1050 minutos
+
+      if (minutosSlot <= minutosAhora) {
+        continue; // Saltar este horario, ya pasó la hora
+      }
+    }
 
     let solapado = false;
 
