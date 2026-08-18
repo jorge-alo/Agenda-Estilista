@@ -300,59 +300,36 @@ export const getDisponibilidad = async (
     horarios = [...horarios, ...slots];
   }
 
-  //🧠 8. Calcular disponibilidad REAL (con solapamiento)
+    //🧠 8. Calcular disponibilidad REAL (con solapamiento)
   const disponibles: string[] = [];
 
   // ✅ NUEVO: Preparar variables para filtrar horarios pasados
-  const fechaSeleccionada = new Date(fecha + "T00:00:00"); // Hora local
-  const hoyMedianoche = new Date();
-  hoyMedianoche.setHours(0, 0, 0, 0); // Resetear a medianoche para comparar solo fechas
-  const esHoy = fechaSeleccionada.getTime() === hoy.getTime();
-
-  const ahora = new Date();
-  const minutosAhora = ahora.getHours() * 60 + ahora.getMinutes();
-
-   // 🕵️‍♂️ DEBUG: Ver qué valores estamos comparando
-  console.log("🔍 DEBUG HORARIOS PASADOS:", {
-    fechaRecibida: fecha,
-    fechaSeleccionada: fechaSeleccionada.toISOString(),
-    hoyMedianoche: hoyMedianoche.toISOString(),
-    esHoy: esHoy,
-    horaActual: ahora.toISOString(),
-    minutosAhora: minutosAhora,
-    primerHorario: horarios[0] // Ver el formato del primer horario
-  });
+  // Comparar fechas como strings evita problemas de zona horaria
+  const fechaHoy = new Date();
+  const fechaHoyString = `${fechaHoy.getFullYear()}-${String(fechaHoy.getMonth() + 1).padStart(2, '0')}-${String(fechaHoy.getDate()).padStart(2, '0')}`;
+  
+  const esHoy = fecha === fechaHoyString;
+  
+  const minutosAhora = fechaHoy.getHours() * 60 + fechaHoy.getMinutes();
 
   for (const horaInicio of horarios) {
     const horaFin = sumarMinutos(horaInicio, duracion);
 
-    // 🔥 NUEVO: verificar que el turno entre dentro del horario del estilista
+    // 🔥 Verificar que el turno entre dentro del horario del estilista
     const dentroDelHorario = horariosDB.some(
       (h: any) => {
         const hInicio = h.hora_inicio.slice(0, 5);
         const hFin = h.hora_fin.slice(0, 5);
         return horaInicio >= hInicio && horaFin <= hFin;
       }
-
     );
 
-    if (!dentroDelHorario) continue; // ← descartamos este slot
+    if (!dentroDelHorario) continue;
 
     // ✅ NUEVO: Si la fecha es HOY, excluir horarios que ya pasaron
     if (esHoy) {
-      // 🕵️‍♂️ DEBUG: Ver cómo se parsea cada horario
-      const partes = horaInicio.split(":");
-      const h = parseInt(partes[0], 10);
-      const m = parseInt(partes[1], 10);
+      const [h, m] = horaInicio.split(":").map(Number);
       const minutosSlot = h * 60 + m;
-      
-      console.log(`🕐 Horario ${horaInicio}:`, {
-        horas: h,
-        minutos: m,
-        minutosSlot: minutosSlot,
-        minutosAhora: minutosAhora,
-        debeFiltrarse: minutosSlot <= minutosAhora
-      });
       
       if (minutosSlot <= minutosAhora) {
         continue; // Saltar este horario, ya pasó la hora
@@ -376,13 +353,11 @@ export const getDisponibilidad = async (
 
     // 🔒 Verificar bloqueos manuales
     for (const bloqueo of bloqueos) {
-
       const bloqueoInicio = bloqueo.hora_inicio.slice(0, 5);
       const bloqueoFin = bloqueo.hora_fin.slice(0, 5);
 
       const hayConflictoBloqueo =
-        horaInicio < bloqueoFin &&
-        horaFin > bloqueoInicio;
+        horaInicio < bloqueoFin && horaFin > bloqueoInicio;
 
       if (hayConflictoBloqueo) {
         solapado = true;
