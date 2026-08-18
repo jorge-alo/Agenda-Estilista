@@ -300,17 +300,27 @@ export const getDisponibilidad = async (
     horarios = [...horarios, ...slots];
   }
 
-    //🧠 8. Calcular disponibilidad REAL (con solapamiento)
+  //🧠 8. Calcular disponibilidad REAL (con solapamiento)
   const disponibles: string[] = [];
 
-  // ✅ NUEVO: Preparar variables para filtrar horarios pasados
-  // Comparar fechas como strings evita problemas de zona horaria
-  const fechaHoy = new Date();
-  const fechaHoyString = `${fechaHoy.getFullYear()}-${String(fechaHoy.getMonth() + 1).padStart(2, '0')}-${String(fechaHoy.getDate()).padStart(2, '0')}`;
+  // ✅ NUEVO: Obtener la fecha y hora actual en Argentina (UTC-3)
+  // Esto soluciona el problema de que Railway/Vercel usan hora UTC
+  const ahoraARG = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Argentina/Buenos_Aires" }));
+  
+  const fechaHoyString = `${ahoraARG.getFullYear()}-${String(ahoraARG.getMonth() + 1).padStart(2, '0')}-${String(ahoraARG.getDate()).padStart(2, '0')}`;
   
   const esHoy = fecha === fechaHoyString;
   
-  const minutosAhora = fechaHoy.getHours() * 60 + fechaHoy.getMinutes();
+  const minutosAhora = ahoraARG.getHours() * 60 + ahoraARG.getMinutes();
+
+  // 🕵️‍♂️ DEBUG: Para verificar que la hora de Argentina es correcta
+  console.log("🔍 DEBUG HORA ARGENTINA:", {
+    fechaRecibida: fecha,
+    fechaHoyString: fechaHoyString,
+    esHoy: esHoy,
+    horaARG: ahoraARG.toLocaleTimeString("es-AR"),
+    minutosAhora: minutosAhora
+  });
 
   for (const horaInicio of horarios) {
     const horaFin = sumarMinutos(horaInicio, duracion);
@@ -326,13 +336,13 @@ export const getDisponibilidad = async (
 
     if (!dentroDelHorario) continue;
 
-    // ✅ NUEVO: Si la fecha es HOY, excluir horarios que ya pasaron
+    // ✅ NUEVO: Si la fecha es HOY, excluir horarios que ya pasaron (en hora Argentina)
     if (esHoy) {
       const [h, m] = horaInicio.split(":").map(Number);
       const minutosSlot = h * 60 + m;
       
       if (minutosSlot <= minutosAhora) {
-        continue; // Saltar este horario, ya pasó la hora
+        continue; // Saltar este horario, ya pasó la hora en Argentina
       }
     }
 
