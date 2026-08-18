@@ -312,6 +312,17 @@ export const getDisponibilidad = async (
   const ahora = new Date();
   const minutosAhora = ahora.getHours() * 60 + ahora.getMinutes();
 
+   // 🕵️‍♂️ DEBUG: Ver qué valores estamos comparando
+  console.log("🔍 DEBUG HORARIOS PASADOS:", {
+    fechaRecibida: fecha,
+    fechaSeleccionada: fechaSeleccionada.toISOString(),
+    hoyMedianoche: hoyMedianoche.toISOString(),
+    esHoy: esHoy,
+    horaActual: ahora.toISOString(),
+    minutosAhora: minutosAhora,
+    primerHorario: horarios[0] // Ver el formato del primer horario
+  });
+
   for (const horaInicio of horarios) {
     const horaFin = sumarMinutos(horaInicio, duracion);
 
@@ -329,9 +340,20 @@ export const getDisponibilidad = async (
 
     // ✅ NUEVO: Si la fecha es HOY, excluir horarios que ya pasaron
     if (esHoy) {
-      const [h, m] = horaInicio.split(":").map(Number);
-      const minutosSlot = h * 60 + m; // Ej: "17:30" = 1050 minutos
-
+      // 🕵️‍♂️ DEBUG: Ver cómo se parsea cada horario
+      const partes = horaInicio.split(":");
+      const h = parseInt(partes[0], 10);
+      const m = parseInt(partes[1], 10);
+      const minutosSlot = h * 60 + m;
+      
+      console.log(`🕐 Horario ${horaInicio}:`, {
+        horas: h,
+        minutos: m,
+        minutosSlot: minutosSlot,
+        minutosAhora: minutosAhora,
+        debeFiltrarse: minutosSlot <= minutosAhora
+      });
+      
       if (minutosSlot <= minutosAhora) {
         continue; // Saltar este horario, ya pasó la hora
       }
