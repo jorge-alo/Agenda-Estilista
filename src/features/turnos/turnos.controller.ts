@@ -23,17 +23,37 @@ export const create = async (req: AuthRequest, res: Response) => {
 
 export const reprogramar = async (req: AuthRequest, res: Response) => {
   try {
-     const { id } = req.params; // 🔥 sacar el id de la URL
-     console.log("Valor de req.body", req.body);
-    const turnoId = await turnoService.reprogramarTurno({id: Number(id), ...req.body});
+    const { id } = req.params;
+    const localId = req.user?.localId;
+    if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+    const turnoId = await turnoService.reprogramarTurno({
+      id: Number(id),
+      ...req.body,
+      local_id: localId,
+    });
 
     res.json({ message: "Turno reprogramado", turnoId });
   } catch (error: any) {
-    if (error.message === "Ese horario ya está ocupado") {
-      return res.status(400).json({ error: error.message });
+    if (error && error.code) {
+      const code = error.code;
+      const map: Record<string, number> = {
+        TURNO_NO_ENCONTRADO: 404,
+        SERVICIO_NO_ENCONTRADO: 400,
+        ESTILISTA_NO_ENCONTRADO: 400,
+        ESTADO_NO_PERMITIDO: 400,
+        TURNO_PENDIENTE_PAGO: 400,
+        HORARIO_OCUPADO: 400,
+        DATOS_INVALIDOS: 400,
+      };
+      const status = map[code] ?? 500;
+      if (status === 500) {
+        return res.status(500).json({ error: "Error al reprogramar turno" });
+      }
+      return res.status(status).json({ error: error.message });
     }
-
-    res.status(500).json({ error: "Error al reprogramar turno" });
+    return res.status(500).json({ error: "Error al reprogramar turno" });
   }
 };
 
@@ -125,14 +145,21 @@ export const disponibilidadAdmin = async (req: AuthRequest, res: Response) => {
   }
 };
 
-export const cancelar = async (req: Request, res: Response) => {
+export const cancelar = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
+    const localId = req.user?.localId;
+    if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
 
-    await turnoService.cancelarTurno(Number(id));
+    await turnoService.cancelarTurno(Number(id), localId);
 
     res.json({ message: "Turno cancelado" });
-  } catch {
+  } catch (error) {
+    if (error instanceof turnoService.ReprogramarError && error.code === "TURNO_NO_ENCONTRADO") {
+      return res.status(404).json({ error: "Turno no encontrado" });
+    }
     res.status(500).json({ error: "Error cancelando turno" });
   }
 };
@@ -153,12 +180,20 @@ export const getTurnosFuturos = async (req: AuthRequest, res: Response) => {
     }
 };
 
-export const completar = async (req: Request, res: Response) => {
+export const completar = async (req: AuthRequest, res: Response) => {
     try {
         const { id } = req.params;
-        await turnoService.completarTurno(Number(id));
+        const localId = req.user?.localId;
+        if (!localId) {
+            return res.status(401).json({ error: "No autorizado" });
+        }
+
+        await turnoService.completarTurno(Number(id), localId);
         res.json({ message: "Turno completado" });
-    } catch {
+    } catch (error) {
+        if (error instanceof turnoService.ReprogramarError && error.code === "TURNO_NO_ENCONTRADO") {
+            return res.status(404).json({ error: "Turno no encontrado" });
+        }
         res.status(500).json({ error: "Error completando turno" });
     }
 };

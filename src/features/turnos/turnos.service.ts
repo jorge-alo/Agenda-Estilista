@@ -1,7 +1,15 @@
 import { pool } from "../../config/db";
+import { ResultSetHeader } from "mysql2";
 import { generarHorarios } from "../../helpers/generarHorarios";
 import { sumarMinutos } from "../../helpers/sumarMinutos"
 
+export class ReprogramarError extends Error {
+  code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
 
 export const createTurno = async (data: any) => {
   const {
@@ -393,11 +401,15 @@ export const getDisponibilidad = async (
   };
 };
 
-export const cancelarTurno = async (id: number) => {
-  await pool.query(
-    "UPDATE turnos SET estado = 'cancelado' WHERE id = ?",
-    [id]
+export const cancelarTurno = async (id: number, localId: number) => {
+  const [result] = await pool.query<ResultSetHeader>(
+    "UPDATE turnos SET estado = 'cancelado' WHERE id = ? AND local_id = ?",
+    [id, localId]
   );
+
+  if (result.affectedRows === 0) {
+    throw new ReprogramarError("TURNO_NO_ENCONTRADO", "Turno no encontrado");
+  }
 };
 
 export const getTurnosFuturos = async (localId: number) => {
@@ -421,11 +433,15 @@ export const getTurnosFuturos = async (localId: number) => {
   return rows;
 };
 
-export const completarTurno = async (id: number) => {
-  await pool.query(
-    "UPDATE turnos SET estado = 'completado' WHERE id = ?",
-    [id]
+export const completarTurno = async (id: number, localId: number) => {
+  const [result] = await pool.query<ResultSetHeader>(
+    "UPDATE turnos SET estado = 'completado' WHERE id = ? AND local_id = ?",
+    [id, localId]
   );
+
+  if (result.affectedRows === 0) {
+    throw new ReprogramarError("TURNO_NO_ENCONTRADO", "Turno no encontrado");
+  }
 };
 
 export const getDisponibilidadAdmin = async (
@@ -553,49 +569,139 @@ export const reprogramarTurno = async (data: any) => {
     servicio_id,
     cliente_nombre,
     cliente_telefono,
+    local_id,
   } = data;
-  console.log("ID del turno:", id, "tipo:", typeof id)
-  // 🔍 1. Obtener duración del servicio
-  const [servicioRows]: any = await pool.query(
-    "SELECT duracion FROM servicios WHERE id = ?",
-    [servicio_id]
-  );
 
-  if (servicioRows.length === 0) {
-    throw new Error("Servicio no encontrado");
+  const isPosInt = (v: any) => {
+    const n = Number(v);
+    return Number.isInteger(n) && n > 0;
+  };
+
+  const isStr = (v: any) => typeof v === "string" || v instanceof String;
+
+  // Validación mínima
+  if (!isPosInt(id)) {
+    throw new ReprogramarError("DATOS_INVALIDOS", "Datos inválidos");
   }
-
-  const duracion = servicioRows[0].duracion;
-
-  // 🧠 2. Calcular hora_fin
-  const hora_fin = sumarMinutos(hora, duracion);
-
-  // 🚫 3. Validar solapamiento REAL (nivel pro)
-  const [rows]: any = await pool.query(
-    `SELECT id FROM turnos 
-     WHERE estilista_id = ?
-     AND fecha = ?
-     AND estado != 'cancelado'
-     AND id != ?
-     AND (
-       (? < hora_fin) AND (? > hora)
-     )`,
-    [estilista_id, fecha, id, hora, hora_fin]
-  );
-
-  if (rows.length > 0) {
-    throw new Error("Ese horario ya está ocupado");
+  if (!isStr(fecha) || !/^\d{4}-\d{2}-\d{2}$/.test(fecha.trim())) {
+    throw new ReprogramarError("DATOS_INVALIDOS", "Datos inválidos");
   }
+  if (!isStr(hora)) {
+    throw new ReprogramarError("DATOS_INVALIDOS", "Datos inválidos");
+  }
+  const horaTrim = hora.trim();
+  if (!/^\d{2}:\d{2}(:\d{2})?$/.test(horaTrim)) {
+    throw new ReprogramarError("DATOS_INVALIDOS", "Datos inválidos");
+  }
+  const horaNormalizada = horaTrim.slice(0, 5);
+  const horaParts = horaNormalizada.split(":").map(Number);
+  if (horaParts[0] < 0 || horaParts[0] > 23 || horaParts[1] < 0 || horaParts[1] > 59) {
+    throw new ReprogramarError("DATOS_INVALIDOS", "Datos inválidos");
+  }
+  if (!isPosInt(estilista_id)) {
+    throw new ReprogramarError("DATOS_INVALIDOS", "Datos inválidos");
+  }
+  if (!isPosInt(servicio_id)) {
+    throw new ReprogramarError("DATOS_INVALIDOS", "Datos inválidos");
+  }
+  const clienteNombreVal = isStr(cliente_nombre) ? cliente_nombre.trim() : "";
+  const clienteTelefonoVal = isStr(cliente_telefono) ? cliente_telefono.trim() : "";
+  // Según correcciones: quitar obligatoriedad de nombre/telefono
+  // (no lanzar error si están vacíos)
 
-  // ✅ así debería estar, actualiza el turno existente
-  const [result]: any = await pool.query(
-    `UPDATE turnos 
-     SET fecha = ?, hora = ?, hora_fin = ?, estilista_id = ?, servicio_id = ?, cliente_nombre = ?, cliente_telefono = ?
-     WHERE id = ?`,
-    [fecha, hora, hora_fin, estilista_id, servicio_id, cliente_nombre, cliente_telefono, id]
-  );
+  const connection = await pool.getConnection();
 
-  return result.insertId;
+  try {
+    await connection.beginTransaction();
+
+    // 1. Lock turno objetivo
+    const [turnoLock]: any = await connection.query(
+      "SELECT id, estado FROM turnos WHERE id = ? AND local_id = ? FOR UPDATE",
+      [id, local_id]
+    );
+    if (turnoLock.length === 0) {
+      throw new ReprogramarError("TURNO_NO_ENCONTRADO", "Turno no encontrado");
+    }
+    if (turnoLock[0].estado === "pendiente_pago") {
+      throw new ReprogramarError("TURNO_PENDIENTE_PAGO", "Este turno está pendiente de pago y no se puede reprogramar");
+    }
+    if (turnoLock[0].estado !== "activo") {
+      throw new ReprogramarError("ESTADO_NO_PERMITIDO", "Solo se pueden reprogramar turnos activos");
+    }
+
+    // 2. Validar servicio por local y obtener duración
+    const [servicioRows]: any = await connection.query(
+      "SELECT duracion FROM servicios WHERE id = ? AND local_id = ?",
+      [servicio_id, local_id]
+    );
+    if (servicioRows.length === 0) {
+      throw new ReprogramarError("SERVICIO_NO_ENCONTRADO", "Servicio no encontrado");
+    }
+    const duracion = servicioRows[0].duracion;
+
+    // 3. Validar estilista por local
+    const [estilistaRows]: any = await connection.query(
+      "SELECT id FROM estilistas WHERE id = ? AND local_id = ?",
+      [estilista_id, local_id]
+    );
+    if (estilistaRows.length === 0) {
+      throw new ReprogramarError("ESTILISTA_NO_ENCONTRADO", "Estilista no encontrado");
+    }
+
+    // 4. Calcular hora_fin (guarda de medianoche DESPUÉS de leer duración)
+    const hora_fin_calc = sumarMinutos(horaNormalizada, duracion);
+    if (hora_fin_calc <= horaNormalizada) {
+      throw new ReprogramarError("DATOS_INVALIDOS", "El turno no puede cruzar la medianoche");
+    }
+
+    // 5. Chequeo de solapamiento CON FOR UPDATE
+    const [rowsSolap]: any = await connection.query(
+      `SELECT id FROM turnos
+       WHERE estilista_id = ?
+       AND fecha = ?
+       AND local_id = ?
+       AND estado != 'cancelado'
+       AND id != ?
+       AND (? < hora_fin AND ? > hora)
+       FOR UPDATE`,
+      [estilista_id, fecha, local_id, id, horaNormalizada, hora_fin_calc]
+    );
+    if (rowsSolap.length > 0) {
+      throw new ReprogramarError("HORARIO_OCUPADO", "Ese horario ya está ocupado");
+    }
+
+    // 6. UPDATE
+    await connection.query(
+      `UPDATE turnos
+       SET fecha = ?, hora = ?, hora_fin = ?, estilista_id = ?, servicio_id = ?, cliente_nombre = ?, cliente_telefono = ?
+       WHERE id = ? AND local_id = ?`,
+      [
+        fecha,
+        horaNormalizada,
+        hora_fin_calc,
+        estilista_id,
+        servicio_id,
+        clienteNombreVal,
+        clienteTelefonoVal,
+        id,
+        local_id,
+      ]
+    );
+
+    await connection.commit();
+    return Number(id);
+  } catch (error: any) {
+    await connection.rollback();
+    if (error instanceof ReprogramarError) {
+      throw error;
+    }
+    if (error.code === "ER_DUP_ENTRY") {
+      throw new ReprogramarError("HORARIO_OCUPADO", "Ese horario ya está ocupado");
+    }
+    throw error;
+  } finally {
+    connection.release();
+  }
 };
 
 export const getTurnosByRango = async (desde: string, hasta: string, localId: number) => {
