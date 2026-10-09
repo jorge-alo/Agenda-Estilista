@@ -94,11 +94,19 @@ export const pagosService = {
     return rows[0];
   },
 
-    obtenerPagoPorTurnoId: async (turnoId: number) => {
+  obtenerPagoPorTurnoId: async (turnoId: number) => {
     const [rows]: any = await pool.query(
       "SELECT * FROM pagos WHERE turno_id = ? ORDER BY id DESC LIMIT 1",
       [turnoId]
     );
+    return rows[0];
+  },
+  obtenerPagoPorMpPaymentId: async (mpPaymentId: string) => {
+    const [rows]: any = await pool.query(
+      "SELECT * FROM pagos WHERE mp_payment_id = ?",
+      [mpPaymentId]
+    );
+
     return rows[0];
   },
 

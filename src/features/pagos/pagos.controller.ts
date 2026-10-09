@@ -4,6 +4,7 @@ import { pagosService } from './pagos.service';
 import { MercadoPagoConfig, Payment } from 'mercadopago';
 import { sendTurnoConfirmado } from '../notifications/application/sendWhatsAppNotification';
 import { formatPhoneAR } from '../../helpers/formatPhoneAR';
+import { procesarPagoSuscripcion } from '../suscripcion/suscripcion.pagos';
 
 // Inicializamos el cliente de MP una sola vez para reutilizarlo
 const mpClient = new MercadoPagoConfig({
@@ -14,23 +15,39 @@ const paymentClient = new Payment(mpClient);
 export const crearLinkPago = async (req: Request, res: Response) => {
   try {
     const { turnoId, tipo, porcentajeSeña } = req.body;
+
+    if (tipo !== undefined && tipo !== 'seña' && tipo !== 'completo') {
+      return res.status(400).json({ error: 'Tipo de pago inválido' });
+    }
+
+    if (
+      porcentajeSeña !== undefined &&
+      (!Number.isFinite(porcentajeSeña) ||
+        porcentajeSeña < 1 ||
+        porcentajeSeña > 100)
+    ) {
+      return res.status(400).json({ error: 'Porcentaje de seña inválido' });
+    }
     const localId = (req as any).user?.localId;
 
     if (!localId) {
       return res.status(401).json({ error: 'No autorizado' });
     }
 
-    if (!turnoId) {
-      return res.status(400).json({ error: 'turnoId es requerido' });
+    const idTurno = Number(turnoId);
+
+    if (!Number.isSafeInteger(idTurno) || idTurno <= 0) {
+      return res.status(400).json({ error: 'turnoId inválido' });
     }
 
     // Obtener información del turno y servicio
     const [turnos]: any = await pool.query(
-      `SELECT t.id, t.servicio_id, s.nombre, s.precio
-       FROM turnos t
-       JOIN servicios s ON t.servicio_id = s.id
-       WHERE t.id = ? AND t.local_id = ?`,
-      [turnoId, localId]
+      `SELECT t.id, t.servicio_id, s.nombre, s.precio, l.slug
+        FROM turnos t
+        JOIN servicios s ON t.servicio_id = s.id
+        JOIN locales l ON l.id = t.local_id
+        WHERE t.id = ? AND t.local_id = ?`,
+      [idTurno, localId]
     );
 
     if (turnos.length === 0) {
@@ -45,8 +62,8 @@ export const crearLinkPago = async (req: Request, res: Response) => {
       localId,
       servicioNombre: turno.nombre,
       monto: turno.precio,
-      tipo: tipo || 'seña',
-      porcentajeSeña: porcentajeSeña || 30,
+      tipo: tipo ?? 'seña',
+      porcentajeSeña: porcentajeSeña ?? 30,
       slug: turno.slug,
     });
 
@@ -61,77 +78,97 @@ export const crearLinkPago = async (req: Request, res: Response) => {
   }
 };
 
+
 export const webhook = async (req: Request, res: Response) => {
-  console.log("📥 WEBHOOK RECIBIDO - BODY:", JSON.stringify(req.body, null, 2));
+  console.log(
+    '📥 WEBHOOK RECIBIDO - BODY:',
+    JSON.stringify(req.body, null, 2)
+  );
 
   try {
     const { type, data, topic, resource, action } = req.body;
 
-    // 🛡️ NORMALIZACIÓN: MP envía el ID de formas distintas. Lo unificamos aquí.
+    // 1. Normalizar el ID del pago.
     let paymentId: string | undefined;
 
     if (type === 'payment' && data?.id) {
-      paymentId = data.id;
+      paymentId = String(data.id);
     } else if (topic === 'payment' && resource) {
-      paymentId = resource;
+      paymentId = String(resource).split('/').pop();
     } else if (action === 'payment.created' && data?.id) {
-      paymentId = data.id;
+      paymentId = String(data.id);
     }
 
-    if (!paymentId) {
-      console.log("ℹ️ Webhook ignorado (no es un evento de pago con ID válido).");
+    if (!paymentId || !/^\d+$/.test(paymentId)) {
+      console.log('ℹ️ Webhook ignorado: ID de pago inválido.');
       return res.status(200).send('OK');
     }
 
-    console.log("💳 [1] Procesando pago ID:", paymentId);
+    console.log('💳 Procesando pago ID:', paymentId);
 
+    // 2. Consultar el estado real del pago en Mercado Pago.
     const payment: any = await obtenerPaymentInfo(paymentId);
 
     if (!payment) {
-      console.error("❌ [2] FALLO: No se pudo obtener la info del pago de MP.");
-      return res.status(200).send('OK');
+      console.error('❌ No se pudo obtener la información del pago.');
+      return res.status(500).send('Error');
     }
-
-    console.log("✅ [3] Info del pago obtenida. Status:", payment.status);
 
     const externalReference = payment.external_reference;
-    
-    // ✅ NUEVO: Detectar si es un pago de SUSCRIPCIÓN del local
-    if (externalReference && externalReference.startsWith('suscripcion-')) {
-      const localId = parseInt(externalReference.replace('suscripcion-', ''), 10);
-      console.log("💼 [SUSCRIPCIÓN] Pago recibido para el local ID:", localId);
+    const status = payment.status;
 
-      if (payment.status === 'approved') {
-        console.log("✅ [SUSCRIPCIÓN] Pago aprobado. Renovando suscripción por 30 días...");
-        
-        await pool.query(
-          `UPDATE locales 
-           SET suscripcion_estado = 'activo', 
-               suscripcion_vencimiento = DATE_ADD(CURDATE(), INTERVAL 30 DAY) 
-           WHERE id = ?`,
-          [localId]
-        );
-        
-        console.log("✅ [SUSCRIPCIÓN] Local renovado exitosamente por 30 días.");
+    console.log('📋 Referencia externa:', externalReference);
+    console.log('💳 Estado de Mercado Pago:', status);
+
+
+    // 3. Procesar suscripciones.
+    if (externalReference?.startsWith("suscripcion-")) {
+      const resultado = await procesarPagoSuscripcion({
+        externalReference,
+        status,
+        mpPaymentId: String(payment.id),
+      });
+
+      if (resultado === "segundo_pago_aprobado") {
+        console.warn("⚠️ Segundo pago aprobado para la misma referencia. Revisar a mano:", {
+          externalReference,
+          pagoNuevo: payment.id,
+        });
       } else {
-        console.log(`ℹ️ [SUSCRIPCIÓN] Pago no aprobado. Status: ${payment.status}`);
+        console.log("📌 Resultado suscripción:", resultado);
       }
-      
-      // Respondemos 200 y terminamos, no es un turno de cliente
+
+      return res.status(200).send("OK");
+    }
+
+    // 4. Verificar que sea un pago de turno.
+    if (!externalReference?.startsWith('turno-')) {
+      console.warn('⚠️ Referencia externa no reconocida:', externalReference);
       return res.status(200).send('OK');
     }
 
-    // Si no empieza con 'turno-', ignoramos
-    if (!externalReference || !externalReference.startsWith('turno-')) {
-      console.warn("⚠️ [4] Webhook recibido sin external_reference válido:", externalReference);
+    const turnoIdTexto = externalReference.slice('turno-'.length);
+    const turnoId = Number(turnoIdTexto);
+
+    if (!Number.isSafeInteger(turnoId) || turnoId <= 0) {
+      console.error('❌ ID de turno inválido en external_reference.');
       return res.status(200).send('OK');
     }
 
-    const turnoId = parseInt(externalReference.replace('turno-', ''), 10);
-    console.log("🎫 [5] Turno ID extraído:", turnoId);
+    // 5. Procesar solamente estados finales conocidos.
+    if (
+      status !== 'approved' &&
+      status !== 'rejected' &&
+      status !== 'cancelled'
+    ) {
+      console.log('⏳ Pago todavía sin estado final:', status);
+      return res.status(200).send('OK');
+    }
 
-    const preferenceId = payment.preference_id || '';
-    console.log("🔗 [6] Preference ID:", preferenceId || "(Vacío, usando fallback)");
+    // 6. Buscar el registro exacto del pago.
+    const preferenceId = payment.preference_id
+      ? String(payment.preference_id)
+      : '';
 
     let pago: any = null;
 
@@ -140,85 +177,214 @@ export const webhook = async (req: Request, res: Response) => {
     }
 
     if (!pago) {
-      console.log("⚠️ [7] Buscando pago por turno_id:", turnoId);
-      pago = await pagosService.obtenerPagoPorTurnoId(turnoId);
+      pago = await pagosService.obtenerPagoPorMpPaymentId(
+        String(payment.id)
+      );
     }
 
     if (!pago) {
-      console.error("❌ [8] FALLO: Pago no encontrado en BD para turno_id:", turnoId);
+      console.error('❌ No se encontró el registro exacto del pago.', {
+        paymentId: payment.id,
+        preferenceId,
+        turnoId,
+      });
+
       return res.status(200).send('OK');
     }
 
-    console.log("✅ [9] Pago encontrado en BD. ID:", pago.id);
+    // 7. Validar la relación entre pago, turno y local.
+    const [turnosAsociados]: any = await pool.query(
+      `SELECT id, local_id
+       FROM turnos
+       WHERE id = ?
+       LIMIT 1`,
+      [turnoId]
+    );
 
-    const status = payment.status;
-    let nuevoEstado: 'aprobado' | 'rechazado' | 'cancelado' = 'rechazado';
+    if (
+      Number(pago.turno_id) !== turnoId ||
+      !turnosAsociados.length ||
+      Number(pago.local_id) !== Number(turnosAsociados[0].local_id)
+    ) {
+      console.error('❌ El pago no coincide con el turno o el local.', {
+        pagoId: pago.id,
+        turnoId,
+        localIdPago: pago.local_id,
+        localIdTurno: turnosAsociados[0]?.local_id,
+      });
 
-    if (status === 'approved') {
-      nuevoEstado = 'aprobado';
-      console.log("🟢 [10] Pago APROBADO. Actualizando turno a 'activo'...");
-      await pool.query("UPDATE turnos SET estado = 'activo' WHERE id = ?", [turnoId]);
+      return res.status(200).send('OK');
+    }
 
-      // ✅ NUEVO: Enviar WhatsApp de confirmación AHORA que el pago fue aprobado
+    const estadoPorStatus: Record<
+      string,
+      'aprobado' | 'rechazado' | 'cancelado'
+    > = {
+      approved: 'aprobado',
+      rejected: 'rechazado',
+      cancelled: 'cancelado',
+    };
+
+    const nuevoEstado = estadoPorStatus[status];
+
+    // 8. Bloquear el pago y actualizar pago/turno atómicamente.
+    const connection = await pool.getConnection();
+    let notificarWhatsApp = false;
+
+    try {
+      await connection.beginTransaction();
+
+      const [pagosBloqueados]: any = await connection.query(
+        `SELECT id, turno_id, local_id, estado
+         FROM pagos
+         WHERE id = ?
+         FOR UPDATE`,
+        [pago.id]
+      );
+
+      const pagoActual = pagosBloqueados[0];
+
+      if (
+        !pagoActual ||
+        Number(pagoActual.turno_id) !== turnoId ||
+        Number(pagoActual.local_id) !== Number(turnosAsociados[0].local_id)
+      ) {
+        await connection.rollback();
+        console.error('❌ El pago no coincide durante la transacción.');
+        return res.status(200).send('OK');
+      }
+
+      // Evitar procesar nuevamente un pago que ya salió de pendiente.
+      if (pagoActual.estado !== 'pendiente') {
+        await connection.rollback();
+
+        console.log(
+          'ℹ️ Pago ya procesado. Estado actual:',
+          pagoActual.estado
+        );
+
+        return res.status(200).send('OK');
+      }
+
+      const [turnosBloqueados]: any = await connection.query(
+        `SELECT id, local_id, estado
+         FROM turnos
+         WHERE id = ? AND local_id = ?
+         FOR UPDATE`,
+        [turnoId, pagoActual.local_id]
+      );
+
+      if (!turnosBloqueados.length) {
+        await connection.rollback();
+        console.error('❌ No se encontró el turno del local esperado.');
+        return res.status(200).send('OK');
+      }
+
+      // Guardar el estado final del pago.
+      await connection.query(
+        `UPDATE pagos
+         SET estado = ?,
+             mp_payment_id = ?,
+             mp_status = ?,
+             mp_status_detail = ?
+         WHERE id = ?`,
+        [
+          nuevoEstado,
+          String(payment.id),
+          status,
+          payment.status_detail ?? null,
+          pagoActual.id,
+        ]
+      );
+
+      if (status === 'approved') {
+        console.log('🟢 Pago aprobado. Actualizando turno.');
+
+        await connection.query(
+          `UPDATE turnos
+           SET estado = 'activo'
+           WHERE id = ? AND local_id = ?`,
+          [turnoId, pagoActual.local_id]
+        );
+
+        notificarWhatsApp = true;
+      } else {
+        console.log(
+          '🔴 Pago rechazado o cancelado. Actualizando turno.'
+        );
+
+        await connection.query(
+          `UPDATE turnos
+           SET estado = 'cancelado'
+           WHERE id = ? AND local_id = ?`,
+          [turnoId, pagoActual.local_id]
+        );
+      }
+
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+
+    // 9. Enviar WhatsApp después del COMMIT.
+    if (notificarWhatsApp) {
       try {
-        console.log("📱 [11] Obteniendo datos del turno para enviar WhatsApp...");
-        
         const [turnos]: any = await pool.query(
-          `SELECT t.cliente_nombre, t.cliente_telefono, t.fecha, t.hora,
-                  s.nombre AS servicioNombre, 
-                  l.nombre AS localNombre, 
-                  l.telefono AS localTelefono, 
-                  l.id AS local_id
+          `SELECT
+             t.cliente_nombre,
+             t.cliente_telefono,
+             t.fecha,
+             t.hora,
+             s.nombre AS servicioNombre,
+             l.nombre AS localNombre,
+             l.telefono AS localTelefono,
+             l.id AS local_id
            FROM turnos t
            JOIN servicios s ON t.servicio_id = s.id
-           JOIN locales l ON t.local_id = l.id
-           WHERE t.id = ?`,
-          [turnoId]
+           JOIN locales l ON l.id = t.local_id
+           WHERE t.id = ? AND t.local_id = ?`,
+          [turnoId, pago.local_id]
         );
 
         if (turnos.length > 0) {
           const t = turnos[0];
-          console.log("📱 [12] Enviando WhatsApp de confirmación a:", t.cliente_telefono);
-          
+
           await sendTurnoConfirmado({
             clienteNombre: t.cliente_nombre,
             clienteTelefono: formatPhoneAR(t.cliente_telefono),
-            fecha: new Date(t.fecha + "T00:00:00").toLocaleDateString("es-AR"),
+            fecha: new Date(
+              t.fecha + 'T00:00:00'
+            ).toLocaleDateString('es-AR'),
             hora: t.hora,
             servicio: t.servicioNombre,
             localNombre: t.localNombre,
             localTelefono: formatPhoneAR(t.localTelefono),
-            localId: String(t.local_id)
+            localId: String(t.local_id),
           });
-          
-          console.log("✅ [13] WhatsApp de confirmación enviado exitosamente post-pago.");
+
+          console.log('✅ WhatsApp de confirmación enviado.');
         } else {
-          console.warn("⚠️ [13] Turno no encontrado para enviar WhatsApp.");
+          console.warn('⚠️ Turno no encontrado para enviar WhatsApp.');
         }
       } catch (whatsappErr) {
-        console.error("❌ [13] Error enviando WhatsApp post-pago (no bloqueante):", whatsappErr);
+        console.error(
+          '❌ Error enviando WhatsApp (no bloqueante):',
+          whatsappErr
+        );
       }
-
-    } else if (status === 'cancelled' || status === 'rejected') {
-      nuevoEstado = status === 'cancelled' ? 'cancelado' : 'rechazado';
-      console.log("🔴 [10] Pago RECHAZADO/CANCELADO. Actualizando turno a 'cancelado'...");
-      await pool.query("UPDATE turnos SET estado = 'cancelado' WHERE id = ?", [turnoId]);
     }
 
-    await pagosService.actualizarEstadoPago(
-      pago.id,
-      nuevoEstado,
-      String(payment.id),
-      status ?? null,
-      payment.status_detail ?? null
+    console.log(
+      `🎉 Pago ${paymentId} procesado. Estado final: ${nuevoEstado}`
     );
 
-    console.log(`🎉 [14] PROCESO COMPLETADO. Pago ${paymentId} procesado. Estado final: ${nuevoEstado}`);
-
-    res.status(200).send('OK');
+    return res.status(200).send('OK');
   } catch (error: any) {
-    console.error('💥 [ERROR CRÍTICO] En webhook:', error);
-    res.status(200).send('OK');
+    console.error('💥 Error crítico en webhook:', error);
+    return res.status(500).send('Error');
   }
 };
 
