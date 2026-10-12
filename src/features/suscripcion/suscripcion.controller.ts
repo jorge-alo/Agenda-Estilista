@@ -14,9 +14,11 @@ export const crearLinkSuscripcion = async (req: Request, res: Response) => {
     const resultado = await suscripcionService.generarPreference(localId);
 
     res.json({ link: resultado.link });
-  } catch (error: any) {
-    console.error("Error creando link de suscripción:", error);
-    res.status(500).json({ error: error.message || "Error al generar el link de pago" });
+  } catch (error: unknown) {
+    const status = typeof error === "object" && error !== null
+      && "status" in error && typeof error.status === "number" ? error.status : undefined;
+    console.error("Error creando link de suscripción:", { status });
+    res.status(500).json({ error: "Error al generar el link de pago de suscripción" });
   }
 };
 
@@ -32,8 +34,10 @@ export const obtenerEstadoSuscripcion = async (req: Request, res: Response) => {
     const estado = await suscripcionService.obtenerEstado(localId);
 
     res.json(estado);
-  } catch (error: any) {
-    console.error("Error obteniendo estado de suscripción:", error);
+  } catch (error: unknown) {
+    const status = typeof error === "object" && error !== null
+      && "status" in error && typeof error.status === "number" ? error.status : undefined;
+    console.error("Error obteniendo estado de suscripción:", { status });
     res.status(500).json({ error: "Error obteniendo estado" });
   }
 };

@@ -1,6 +1,6 @@
 import { pool } from "../../config/db";
 import { sumarMinutos } from "../../helpers/sumarMinutos";
-import { pagosService } from "../pagos/pagos.service";
+import { ErrorCreacionPreference, pagosService } from "../pagos/pagos.service";
 
 export const createTurnoPublico = async (data: any) => {
   const {
@@ -146,8 +146,9 @@ export const createTurnoPublico = async (data: any) => {
         localId: localIdFinal,
         mpLink: mpResult.initPoint, // ✅ Devuelve el link para redirigir
       };
-    } catch (error: any) {
-      console.error("❌ ERROR GENERANDO LINK DE PAGO:", error);
+    } catch (error: unknown) {
+      console.error("❌ ERROR GENERANDO LINK DE PAGO:", error instanceof ErrorCreacionPreference
+        ? error.detalles : { turnoId, localId: localIdFinal });
       throw new Error("Turno reservado, pero no se pudo generar el link de pago. Por favor intentá de nuevo.");
     }
   }

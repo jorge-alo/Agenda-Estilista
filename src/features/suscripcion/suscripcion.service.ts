@@ -2,13 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { pool } from "../../config/db";
 import { MercadoPagoConfig, Preference } from "mercadopago";
-
-// Token global de la plataforma.
-const mpClient = new MercadoPagoConfig({
-  accessToken: process.env.MP_ACCESS_TOKEN!,
-});
-
-const preferenceClient = new Preference(mpClient);
+import type { ResultSetHeader, RowDataPacket } from "mysql2";
 
 export const suscripcionService = {
   // Obtener el estado actual de la suscripción.
@@ -32,8 +26,23 @@ export const suscripcionService = {
 
   // Crear un intento de pago y generar su preferencia.
   generarPreference: async (localId: number) => {
+    if (!Number.isSafeInteger(localId) || localId <= 0) throw new Error("localId inválido");
+    // Esta credencial es siempre la de AgendaOK, no la del local comprador.
+    const accessToken = process.env.MP_ACCESS_TOKEN;
+    if (!accessToken?.trim()) throw new Error("No hay token global de Mercado Pago configurado para suscripciones");
+    let notificationUrl: string;
+    try {
+      const backendUrl = new URL(process.env.BACKEND_URL ?? "");
+      if (!["https:", "http:"].includes(backendUrl.protocol) || backendUrl.username
+        || backendUrl.password || backendUrl.search || backendUrl.hash) throw new Error("URL inválida");
+      notificationUrl = new URL("/api/pagos/webhook/suscripciones", backendUrl).toString();
+    } catch {
+      throw new Error("BACKEND_URL no está configurada correctamente para suscripciones");
+    }
+    const preferenceClient = new Preference(new MercadoPagoConfig({ accessToken }));
+
     // 1. Verificar que el local exista.
-    const [locales]: any = await pool.query(
+    const [locales] = await pool.query<RowDataPacket[]>(
       "SELECT nombre FROM locales WHERE id = ?",
       [localId]
     );
@@ -50,7 +59,7 @@ export const suscripcionService = {
       `suscripcion-${localId}-${randomUUID()}`;
 
     // 3. Registrar el intento antes de llamar a Mercado Pago.
-    const [resultado]: any = await pool.query(
+    const [resultado] = await pool.query<ResultSetHeader>(
       `INSERT INTO pagos_suscripcion
          (local_id, external_reference, monto, estado)
        VALUES (?, ?, ?, 'pendiente')`,
@@ -76,6 +85,7 @@ export const suscripcionService = {
           },
         ],
         external_reference: externalReference,
+        notification_url: notificationUrl,
         metadata: {
           local_id: localId,
           pago_suscripcion_id: pagoSuscripcionId,
