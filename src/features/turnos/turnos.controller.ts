@@ -9,7 +9,14 @@ export interface AuthRequest extends Request {
 
 export const create = async (req: AuthRequest, res: Response) => {
   try {
-    const turnoId = await turnoService.createTurno(req.body);
+    const localId = req.user?.localId;
+    if (typeof localId !== "number" || !Number.isSafeInteger(localId) || localId <= 0) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+    const turnoId = await turnoService.createTurno({
+      ...req.body,
+      local_id: localId,
+    });
 
     res.json({ message: "Turno creado", turnoId });
   } catch (error: any) {
