@@ -3,11 +3,14 @@ import * as superadminService from "./superadmin.service";
 
 export const register = async (req: Request, res: Response) => {
   try {
-    const { email, password, nombreLocal, telefono } = req.body;
-    const userId = await superadminService.registerUser(email, password, nombreLocal, telefono);
+    const { email, password, nombreLocal, telefono, business_type } = req.body;
+    const userId = await superadminService.registerUser(email, password, nombreLocal, telefono, business_type);
     res.json({ status: "Ok", message: "Usuario creado", userId });
   } catch (error: any) {
     if (error.message === "El email ya está registrado") {
+      return res.status(400).json({ error: error.message });
+    }
+    if (error.message === "Tipo de negocio inválido") {
       return res.status(400).json({ error: error.message });
     }
     if (error.code === "ER_DUP_ENTRY") {

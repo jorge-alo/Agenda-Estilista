@@ -1,0 +1,2 @@
+ALTER TABLE locales
+  ADD COLUMN business_type VARCHAR(32) NOT NULL DEFAULT 'BEAUTY';

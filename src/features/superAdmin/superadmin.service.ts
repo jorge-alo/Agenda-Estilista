@@ -1,12 +1,22 @@
 import { pool } from "../../config/db";
 import bcrypt from "bcrypt";
+import { isBusinessType, BusinessType } from "../../shared/types/businessType";
 
 export const registerUser = async (
   email: string,
   password: string,
   nombreLocal: string,
-  telefono: string
+  telefono: string,
+  businessType?: BusinessType
 ) => {
+  // Validar business_type ANTES de cualquier operación de BD o transacción.
+  // Usar default SOLO cuando el campo no fue enviado (undefined).
+  // Si se envió explícitamente (incluyendo null, "", etc.), validar estrictamente.
+  const businessTypeValue = businessType !== undefined ? businessType : 'BEAUTY';
+  if (!isBusinessType(businessTypeValue)) {
+    throw new Error("Tipo de negocio inválido");
+  }
+
   const connection = await pool.getConnection();
 
   try {
@@ -27,10 +37,9 @@ export const registerUser = async (
       .replace(/\s+/g, "-");
 
     // 🏪 crear local
-   const [localResult]: any = await connection.query(
-  `INSERT INTO locales (nombre, slug, telefono, suscripcion_estado, suscripcion_vencimiento) 
-   VALUES (?, ?, ?, 'activo', DATE_ADD(CURDATE(), INTERVAL 30 DAY))`,
-  [nombreLocal, slug, telefono]
+    const [localResult]: any = await connection.query(
+  `INSERT INTO locales (nombre, slug, telefono, suscripcion_estado, suscripcion_vencimiento, business_type) VALUES (?, ?, ?, 'activo', DATE_ADD(CURDATE(), INTERVAL 30 DAY), ?)`,
+  [nombreLocal, slug, telefono, businessTypeValue]
 );
 
     const localId = localResult.insertId;
@@ -64,6 +73,7 @@ export const getAllLocales = async () => {
       l.telefono,
       l.activo,
       l.created_at,
+      l.business_type,
       u.id AS usuario_id,
       u.email,
       u.activo AS usuario_activo
@@ -84,6 +94,7 @@ export const getLocalById = async (id: number) => {
       l.telefono,
       l.activo,
       l.created_at,
+      l.business_type,
       u.id AS usuario_id,
       u.email,
       u.activo AS usuario_activo
