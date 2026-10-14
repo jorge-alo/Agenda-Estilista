@@ -7,7 +7,7 @@
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test": "node --require ts-node/register/transpile-only --require ./src/features/pagos/pagos.test.setup.ts --test src/features/pagos/pagos.service.test.ts src/features/pagos/pagos.webhook.test.ts src/features/suscripcion/suscripcion.pagos.test.ts src/features/turnos/turnos.security.test.ts src/features/superAdmin/superadmin.business-type.test.ts src/features/pet/pet.test.ts"
+    "test": "node --require ts-node/register/transpile-only --require ./src/features/pagos/pagos.test.setup.ts --test src/features/pagos/pagos.service.test.ts src/features/pagos/pagos.webhook.test.ts src/features/suscripcion/suscripcion.pagos.test.ts src/features/turnos/turnos.security.test.ts src/features/superAdmin/superadmin.business-type.test.ts src/features/pet/pet.test.ts src/features/pet/pet-servicios.test.ts"
   },
   "keywords": [],
   "author": "",
