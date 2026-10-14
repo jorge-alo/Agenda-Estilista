@@ -1,0 +1,174 @@
+import { Response } from "express";
+import { AuthRequest } from "../../middlewares/auth.middleware";
+import {
+  validarCrearMascota,
+  validarEditarMascota,
+  validarAsociarResponsable,
+  validarCrearResponsable,
+} from "./pet.types";
+import * as petService from "./pet.service";
+
+export const crearMascota = async (req: AuthRequest, res: Response) => {
+  try {
+    const localId = req.user?.localId;
+    if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const validation = validarCrearMascota(req.body);
+    if (!validation.ok) {
+      return res.status(400).json({ error: validation.errores.join(", ") });
+    }
+
+    const mascota = await petService.crearMascota(localId, validation.data!);
+    return res.status(201).json(mascota);
+  } catch (error: any) {
+    return res.status(500).json({ error: "Error creando mascota" });
+  }
+};
+
+export const listarMascotas = async (req: AuthRequest, res: Response) => {
+  try {
+    const localId = req.user?.localId;
+    if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const mascotas = await petService.listarMascotas(localId);
+    return res.json(mascotas);
+  } catch (error: any) {
+    return res.status(500).json({ error: "Error listando mascotas" });
+  }
+};
+
+export const obtenerMascota = async (req: AuthRequest, res: Response) => {
+  try {
+    const localId = req.user?.localId;
+    if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const mascotaId = parseInt(req.params.id as string, 10);
+    if (isNaN(mascotaId)) {
+      return res.status(400).json({ error: "ID de mascota inválido" });
+    }
+
+    const mascota = await petService.obtenerMascotaConResponsables(localId, mascotaId);
+    if (!mascota) {
+      return res.status(404).json({ error: "Mascota no encontrada" });
+    }
+
+    return res.json(mascota);
+  } catch (error: any) {
+    return res.status(500).json({ error: "Error obteniendo mascota" });
+  }
+};
+
+export const editarMascota = async (req: AuthRequest, res: Response) => {
+  try {
+    const localId = req.user?.localId;
+    if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const mascotaId = parseInt(req.params.id as string, 10);
+    if (isNaN(mascotaId)) {
+      return res.status(400).json({ error: "ID de mascota inválido" });
+    }
+
+    const validation = validarEditarMascota(req.body);
+    if (!validation.ok) {
+      return res.status(400).json({ error: validation.errores.join(", ") });
+    }
+
+    const mascota = await petService.editarMascota(localId, mascotaId, validation.data!);
+    return res.json(mascota);
+  } catch (error: any) {
+    if (error.message === "No hay campos para actualizar") {
+      return res.status(400).json({ error: error.message });
+    }
+    if (error.message === "Mascota no encontrada o no pertenece a tu local") {
+      return res.status(404).json({ error: error.message });
+    }
+    return res.status(500).json({ error: "Error editando mascota" });
+  }
+};
+
+export const crearResponsable = async (req: AuthRequest, res: Response) => {
+  try {
+    const localId = req.user?.localId;
+    if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const validation = validarCrearResponsable(req.body);
+    if (!validation.ok) {
+      return res.status(400).json({ error: validation.errores.join(", ") });
+    }
+
+    const responsable = await petService.crearResponsable(localId, validation.data!);
+    return res.status(responsable.isNew ? 201 : 200).json(responsable);
+  } catch (error: any) {
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({ error: "El teléfono ya existe en este local" });
+    }
+    return res.status(500).json({ error: "Error creando responsable" });
+  }
+};
+
+export const asociarResponsable = async (req: AuthRequest, res: Response) => {
+  try {
+    const localId = req.user?.localId;
+    if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const mascotaId = parseInt(req.params.mascotaId as string, 10);
+    if (isNaN(mascotaId)) {
+      return res.status(400).json({ error: "ID de mascota inválido" });
+    }
+
+    const validation = validarAsociarResponsable(req.body);
+    if (!validation.ok) {
+      return res.status(400).json({ error: validation.errores.join(", ") });
+    }
+
+    await petService.asociarResponsable(localId, mascotaId, validation.data!);
+    return res.status(201).json({ message: "Responsable asociado correctamente" });
+  } catch (error: any) {
+    if (error.message === "Mascota no encontrada o no pertenece a tu local") {
+      return res.status(404).json({ error: error.message });
+    }
+    if (error.message === "Cliente no encontrado o no pertenece a tu local") {
+      return res.status(404).json({ error: error.message });
+    }
+    if (error.message === "El responsable ya está asociado a esta mascota") {
+      return res.status(409).json({ error: error.message });
+    }
+    return res.status(500).json({ error: "Error asociando responsable" });
+  }
+};
+
+export const desasociarResponsable = async (req: AuthRequest, res: Response) => {
+  try {
+    const localId = req.user?.localId;
+    if (!localId) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const mascotaId = parseInt(req.params.mascotaId as string, 10);
+    const clienteId = parseInt(req.params.clienteId as string, 10);
+
+    if (isNaN(mascotaId) || isNaN(clienteId)) {
+      return res.status(400).json({ error: "IDs inválidos" });
+    }
+
+    await petService.desasociarResponsable(localId, mascotaId, clienteId);
+    return res.json({ message: "Responsable desasociado correctamente" });
+  } catch (error: any) {
+    if (error.message === "Asociación no encontrada o no pertenece a tu local") {
+      return res.status(404).json({ error: error.message });
+    }
+    return res.status(500).json({ error: "Error desasociando responsable" });
+  }
+};
