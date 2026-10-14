@@ -6,7 +6,7 @@ import Module from "node:module";
 import { after, before, beforeEach, test, describe } from "node:test";
 import express from "express";
 import jwt from "jsonwebtoken";
-import { pool } from "../../config/db";
+import { pool } from "../../../config/db";
 
 const JWT_TEST_SECRET = "SECRETO_JWT_FICTICIO_PET02_SOLO_TESTS";
 
@@ -18,7 +18,7 @@ let petRouter: any;
 let server: Server;
 let port: number;
 
-const originalDbModule = require.cache[require.resolve("../../config/db")];
+const originalDbModule = require.cache[require.resolve("../../../config/db")];
 
 function petAdminToken(payload: Record<string, unknown> = {}): string {
   return jwt.sign({ userId: 1, rol: "admin", localId: petLocalId, ...payload }, JWT_TEST_SECRET, { expiresIn: "1m" });
@@ -58,16 +58,16 @@ async function httpRequest(
   });
 }
 
-const routesPath = require.resolve("./pet.routes");
-const controllerPath = require.resolve("./pet.controller");
-const servicePath = require.resolve("./pet.service");
+const routesPath = require.resolve("../pet.routes");
+const controllerPath = require.resolve("./mascotas.controller");
+const servicePath = require.resolve("./mascotas.service");
 
 before(async () => {
   delete require.cache[routesPath];
   delete require.cache[controllerPath];
   delete require.cache[servicePath];
 
-  const { default: router } = require("./pet.routes") as typeof import("./pet.routes");
+  const { default: router } = require("../pet.routes") as typeof import("../pet.routes");
   petRouter = router;
 
   const app = express();
@@ -141,9 +141,9 @@ after(async () => {
         errors.push(error);
       } finally {
         if (originalDbModule) {
-          require.cache[require.resolve("../../config/db")] = originalDbModule;
+          require.cache[require.resolve("../../../config/db")] = originalDbModule;
         } else {
-          delete require.cache[require.resolve("../../config/db")];
+          delete require.cache[require.resolve("../../../config/db")];
         }
         delete require.cache[routesPath];
         delete require.cache[controllerPath];

@@ -1,10 +1,10 @@
-import { pool } from "../../config/db";
+import { pool } from "../../../config/db";
 import {
   CrearMascotaPayload,
   EditarMascotaPayload,
   AsociarResponsablePayload,
   CrearResponsablePayload,
-} from "./pet.types";
+} from "./mascotas.types";
 
 export interface Mascota {
   id: number;

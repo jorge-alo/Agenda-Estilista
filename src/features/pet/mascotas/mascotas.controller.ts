@@ -1,12 +1,12 @@
 import { Response } from "express";
-import { AuthRequest } from "../../middlewares/auth.middleware";
+import { AuthRequest } from "../../../middlewares/auth.middleware";
 import {
   validarCrearMascota,
   validarEditarMascota,
   validarAsociarResponsable,
   validarCrearResponsable,
-} from "./pet.types";
-import * as petService from "./pet.service";
+} from "./mascotas.types";
+import * as petService from "./mascotas.service";
 
 export const crearMascota = async (req: AuthRequest, res: Response) => {
   try {

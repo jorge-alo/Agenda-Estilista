@@ -1,6 +1,6 @@
 import type { PoolConnection, RowDataPacket, ResultSetHeader } from "mysql2/promise";
-import { pool } from "../../config/db";
-import { PetServicioError } from "./pet-servicios.types";
+import { pool } from "../../../config/db";
+import { PetServicioError } from "./servicios.types";
 
 async function validarMascota(localId: number, mascotaId: number) {
   const [rows] = await pool.query<RowDataPacket[]>(

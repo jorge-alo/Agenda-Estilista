@@ -5,9 +5,9 @@ import { before, beforeEach, after, test } from "node:test";
 import express from "express";
 import jwt from "jsonwebtoken";
 import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
-import { pool } from "../../config/db";
-import router from "./pet.routes";
-import { ServiciosRouter } from "../servicios/servicio.routes";
+import { pool } from "../../../config/db";
+import router from "../pet.routes";
+import { ServiciosRouter } from "../../servicios/servicio.routes";
 
 const secret = "PET03_FICTICIO_EXCLUSIVO_TESTS";
 const locales: number[] = [];

@@ -1,7 +1,7 @@
 import type { Response } from "express";
-import type { AuthRequest } from "../../middlewares/auth.middleware";
-import * as service from "./pet-servicios.service";
-import { PetServicioError, validarDuracion, validarId } from "./pet-servicios.types";
+import type { AuthRequest } from "../../../middlewares/auth.middleware";
+import * as service from "./servicios.service";
+import { PetServicioError, validarDuracion, validarId } from "./servicios.types";
 
 function localDelJwt(req: AuthRequest): number {
   if (!req.user?.localId) throw new PetServicioError(401, "No autorizado");
