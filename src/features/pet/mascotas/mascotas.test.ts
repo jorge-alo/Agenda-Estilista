@@ -343,6 +343,96 @@ describe("PET-02B Mascotas - CRUD", () => {
   });
 });
 
+describe("PET-06B Mascotas - alta_exigencia vía PATCH", () => {
+  test("POST con altaExigencia no lo habilita: nace en false", async () => {
+    const result = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: "Nueva Alta", altaExigencia: true });
+    assert.equal(result.statusCode, 201);
+    const mascota = JSON.parse(result.body);
+    assert.equal(mascota.alta_exigencia, 0);
+  });
+
+  test("PATCH false -> true actualiza y persiste en el detalle", async () => {
+    const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: "Toggle On" });
+    const mascota = JSON.parse(create.body);
+    assert.equal(mascota.alta_exigencia, 0);
+    const result = await httpRequest("PATCH", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken(), { altaExigencia: true });
+    assert.equal(result.statusCode, 200);
+    assert.equal(JSON.parse(result.body).alta_exigencia, 1);
+    const detalle = JSON.parse((await httpRequest("GET", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken())).body);
+    assert.equal(detalle.alta_exigencia, 1);
+  });
+
+  test("PATCH true -> false actualiza y persiste en el detalle", async () => {
+    const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: "Toggle Off" });
+    const mascota = JSON.parse(create.body);
+    assert.equal((await httpRequest("PATCH", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken(), { altaExigencia: true })).statusCode, 200);
+    const result = await httpRequest("PATCH", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken(), { altaExigencia: false });
+    assert.equal(result.statusCode, 200);
+    assert.equal(JSON.parse(result.body).alta_exigencia, 0);
+    const detalle = JSON.parse((await httpRequest("GET", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken())).body);
+    assert.equal(detalle.alta_exigencia, 0);
+  });
+
+  test("PATCH combina nombre y altaExigencia sin regresión", async () => {
+    const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: "Original" });
+    const mascota = JSON.parse(create.body);
+    const result = await httpRequest("PATCH", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken(), { nombre: "Rocky", altaExigencia: true });
+    assert.equal(result.statusCode, 200);
+    const editada = JSON.parse(result.body);
+    assert.equal(editada.nombre, "Rocky");
+    assert.equal(editada.alta_exigencia, 1);
+  });
+
+  test("PATCH altaExigencia=true es válido sin fila pet_settings", async () => {
+    await pool.query("DELETE FROM pet_settings WHERE local_id = ?", [petLocalId]);
+    const [previo]: any = await pool.query("SELECT local_id FROM pet_settings WHERE local_id = ?", [petLocalId]);
+    assert.equal(previo.length, 0);
+    const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: "Sin Settings" });
+    const mascota = JSON.parse(create.body);
+    const result = await httpRequest("PATCH", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken(), { altaExigencia: true });
+    assert.equal(result.statusCode, 200);
+    assert.equal(JSON.parse(result.body).alta_exigencia, 1);
+    const [posterior]: any = await pool.query("SELECT local_id FROM pet_settings WHERE local_id = ?", [petLocalId]);
+    assert.equal(posterior.length, 0);
+  });
+
+  for (const [label, value] of [["1", 1], ["0", 0], ["string true", "true"], ["string false", "false"], ["null", null], ["array", []], ["object", {}]] as const) {
+    test(`PATCH altaExigencia inválido (${label}): 400 sin cambios`, async () => {
+      const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: `Inv ${label}` });
+      const mascota = JSON.parse(create.body);
+      const result = await httpRequest("PATCH", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken(), { altaExigencia: value });
+      assert.equal(result.statusCode, 400, result.body);
+      const detalle = JSON.parse((await httpRequest("GET", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken())).body);
+      assert.equal(detalle.alta_exigencia, 0);
+    });
+  }
+
+  test("PATCH altaExigencia de mascota de otro tenant: 404", async () => {
+    const create = await httpRequest("POST", "/api/pet/admin/mascotas", otherPetAdminToken(), { nombre: "Ajena" });
+    const mascota = JSON.parse(create.body);
+    const result = await httpRequest("PATCH", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken(), { altaExigencia: true });
+    assert.equal(result.statusCode, 404);
+    const detalle = JSON.parse((await httpRequest("GET", `/api/pet/admin/mascotas/${mascota.id}`, otherPetAdminToken())).body);
+    assert.equal(detalle.alta_exigencia, 0);
+  });
+
+  test("Protegidos (local_id, reserva_online_habilitada, alta_exigencia snake) siguen ignorados junto a altaExigencia", async () => {
+    const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: "Protegidos" });
+    const mascota = JSON.parse(create.body);
+    const result = await httpRequest("PATCH", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken(), {
+      altaExigencia: true,
+      local_id: 99999,
+      reserva_online_habilitada: true,
+      alta_exigencia: true,
+    });
+    assert.equal(result.statusCode, 200);
+    const editada = JSON.parse(result.body);
+    assert.equal(editada.alta_exigencia, 1);
+    assert.equal(editada.reserva_online_habilitada, 0);
+    assert.equal(editada.local_id, petLocalId);
+  });
+});
+
 describe("PET-02B Responsables - Crear/Buscar", () => {
   test("Crear responsable nuevo", async () => {
     const result = await httpRequest("POST", "/api/pet/admin/responsables", petAdminToken(), {

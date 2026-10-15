@@ -17,6 +17,7 @@ export interface EditarMascotaPayload {
   tipo_pelo?: string | null;
   observaciones?: string | null;
   activo?: boolean;
+  altaExigencia?: boolean;
 }
 
 export interface AsociarResponsablePayload {
@@ -150,6 +151,11 @@ export function validarEditarMascota(payload: unknown): { ok: boolean; errores: 
     errores.push("activo debe ser boolean");
   }
 
+  const altaExigencia = p.altaExigencia;
+  if (altaExigencia !== undefined && typeof altaExigencia !== "boolean") {
+    errores.push("altaExigencia debe ser boolean");
+  }
+
   if (errores.length > 0) {
     return { ok: false, errores };
   }
@@ -163,6 +169,7 @@ export function validarEditarMascota(payload: unknown): { ok: boolean; errores: 
   if (tipo_pelo !== undefined) data.tipo_pelo = (tipo_pelo as string)?.trim() || null;
   if (observaciones !== undefined) data.observaciones = (observaciones as string)?.trim() || null;
   if (activo !== undefined) data.activo = activo as boolean;
+  if (altaExigencia !== undefined) data.altaExigencia = altaExigencia as boolean;
 
   return { ok: true, errores: [], data };
 }

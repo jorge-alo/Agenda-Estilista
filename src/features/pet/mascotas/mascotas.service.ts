@@ -152,6 +152,10 @@ export const editarMascota = async (localId: number, mascotaId: number, payload:
     fields.push("activo = ?");
     values.push(payload.activo ? 1 : 0);
   }
+  if (payload.altaExigencia !== undefined) {
+    fields.push("alta_exigencia = ?");
+    values.push(payload.altaExigencia ? 1 : 0);
+  }
 
   if (fields.length === 0) {
     return obtenerMascota(localId, mascotaId).then(m => {
