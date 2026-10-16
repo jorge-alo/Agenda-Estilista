@@ -7,6 +7,7 @@ import extrasRouter from "./extras/extras.routes";
 import horariosRouter from "./horarios/horarios.routes";
 import bloqueosRouter from "./bloqueos/bloqueos.routes";
 import settingsRouter from "./settings/settings.routes";
+import disponibilidadRouter from "./disponibilidad/disponibilidad.routes";
 
 const petRouter = Router();
 
@@ -19,5 +20,6 @@ petRouter.use(extrasRouter);
 petRouter.use(horariosRouter);
 petRouter.use(bloqueosRouter);
 petRouter.use(settingsRouter);
+petRouter.use(disponibilidadRouter);
 
 export default petRouter;
