@@ -1,7 +1,7 @@
 import type { Response } from "express";
 import type { AuthRequest } from "../../../middlewares/auth.middleware";
 import { DisponibilidadPetError } from "../disponibilidad/disponibilidad.service";
-import { cancelarTurnoPet, completarTurnoPet, crearTurnoPet, listarTurnosPetAdmin, reprogramarTurnoPet } from "./turnos.service";
+import { cancelarTurnoPet, completarTurnoPet, crearTurnoPet, listarTurnosPetAdmin, obtenerDisponibilidadReprogramarTurnoPet, reprogramarTurnoPet } from "./turnos.service";
 import { fechaPetValida } from "../disponibilidad/disponibilidad.types";
 import { TurnoPetError, validarCrearTurnoPet, validarReprogramarTurnoPet, type ConsultaListadoTurnosPet } from "./turnos.types";
 
@@ -119,5 +119,38 @@ export async function listar(req: AuthRequest, res: Response) {
       return res.status(error.status).json({ error: error.status >= 500 ? "Error listando turnos PET" : error.message, code: error.code });
     }
     return res.status(500).json({ error: "Error listando turnos PET" });
+  }
+}
+
+export async function disponibilidadReprogramacion(req: AuthRequest, res: Response) {
+  try {
+    const localId: unknown = req.user?.localId;
+    if (typeof localId !== "number" || !Number.isInteger(localId) || localId < 1 || localId > 2147483647) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const rawId: unknown = req.params.id;
+    if (typeof rawId !== "string" || !/^[1-9]\d*$/.test(rawId)) {
+      throw new TurnoPetError(400, "PET_TURNO_INVALID_ID", "ID de turno inválido");
+    }
+    const turnoId = Number(rawId);
+    if (!Number.isSafeInteger(turnoId) || turnoId > 2147483647) {
+      throw new TurnoPetError(400, "PET_TURNO_INVALID_ID", "ID de turno inválido");
+    }
+
+    const query = req.query as Record<string, unknown>;
+    if (Object.keys(query).length !== 1 || !Object.prototype.hasOwnProperty.call(query, "fecha")
+      || !fechaPetValida(query.fecha)) {
+      throw new TurnoPetError(400, "PET_TURNOS_INVALID_QUERY", "Se requiere una fecha YYYY-MM-DD válida");
+    }
+    return res.json(await obtenerDisponibilidadReprogramarTurnoPet(localId, turnoId, query.fecha));
+  } catch (error: unknown) {
+    if (error instanceof TurnoPetError || error instanceof DisponibilidadPetError) {
+      return res.status(error.status).json({
+        error: error.status >= 500 ? "Error calculando disponibilidad para reprogramación PET" : error.message,
+        code: error.code,
+      });
+    }
+    return res.status(500).json({ error: "Error calculando disponibilidad para reprogramación PET" });
   }
 }

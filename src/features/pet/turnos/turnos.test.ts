@@ -132,6 +132,29 @@ async function getDisponibilidadPet(): Promise<{ status: number; data: { slots: 
   });
 }
 
+async function getDisponibilidadReprogramar(
+  turnoId: string | number,
+  query = `?fecha=${fecha}`,
+  target: number | null = localId,
+  rol = "admin",
+) {
+  const token = target === null ? undefined : jwt.sign({ userId: 1, localId: target, rol }, secret, { expiresIn: "1m" });
+  return new Promise<{ status: number; data: Record<string, unknown> }>((resolve, reject) => {
+    const req = request({ hostname: "127.0.0.1", port, method: "GET",
+      path: `/api/pet/admin/turnos/${turnoId}/disponibilidad${query}`,
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    }, res => {
+      let content = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk: string) => { content += chunk; });
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, data: JSON.parse(content) as Record<string, unknown> }));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 async function getTurnosPet(path: string, target: number | null = localId, rol = "admin") {
   const token = target === null ? undefined : jwt.sign({ userId: 1, localId: target, rol }, secret, { expiresIn: "1m" });
   return new Promise<{ status: number; data: unknown }>((resolve, reject) => {
@@ -1493,4 +1516,112 @@ test("PET-09B extras se agrupan por turno sin mezclar filas entre IDs", async ()
     [firstId, [{ id: extraId, nombre: "First extra", duracionMinutos: 10 }]],
     [secondId, [{ id: extraDosId, nombre: "Second extra", duracionMinutos: 20 }]],
   ]);
+});
+
+test("PET-09E.1 disponibilidad de reprogramación valida auth, rol, ID, fecha y tenant", async () => {
+  const id = await turnoExistente("10:00", "11:00", "activo", 0);
+  assert.equal((await getDisponibilidadReprogramar(id, `?fecha=${fecha}`, null)).status, 401);
+  assert.equal((await getDisponibilidadReprogramar(id, `?fecha=${fecha}`, localId, "superadmin")).status, 403);
+  assert.equal((await getDisponibilidadReprogramar(id, `?fecha=${fecha}`, beautyLocal)).status, 403);
+  assert.equal((await getDisponibilidadReprogramar("bad-id")).status, 400);
+  assert.equal((await getDisponibilidadReprogramar(2147483647)).status, 404);
+  for (const query of [
+    "", "?", "?fecha=", "?fecha=2099-02-30", "?fecha=2099-10-20&fecha=2099-10-21", `?fecha=${fecha}&localId=${localId}`,
+  ]) assert.equal((await getDisponibilidadReprogramar(id, query)).status, 400, query);
+
+  const foreignTurn = await crearTurnoLocal(otroLocal, mascotaAjenaId, clienteAjenoId, servicioAjenoId, "10:00", "11:00");
+  assert.equal((await getDisponibilidadReprogramar(foreignTurn)).status, 404);
+  const [stylist] = await pool.query<ResultSetHeader>("INSERT INTO estilistas (nombre, local_id) VALUES ('PET09E.1 beauty stylist', ?)", [localId]);
+  const beautyTurn = await crearTurnoBeautyFixture(localId, stylist.insertId, "08:00");
+  assert.equal((await getDisponibilidadReprogramar(beautyTurn)).status, 404);
+  await pool.query("DELETE FROM turnos WHERE id = ? AND local_id = ?", [beautyTurn, localId]);
+  await pool.query("DELETE FROM estilistas WHERE id = ? AND local_id = ?", [stylist.insertId, localId]);
+});
+
+test("PET-09E.1 exige turno activo; fecha pasada devuelve slots vacíos", async () => {
+  const id = await turnoExistente("10:00", "11:00", "activo", 0);
+  for (const state of ["pendiente_pago", "cancelado", "completado", null] as const) {
+    const stateId = await turnoExistente("11:00", "12:00", state, 0);
+    const result = await getDisponibilidadReprogramar(stateId);
+    assert.equal(result.status, 409, String(state));
+    assert.equal(result.data.code, "PET_TURNO_STATE_NOT_REPROGRAMMABLE");
+    await pool.query("DELETE FROM turnos WHERE id = ? AND local_id = ?", [stateId, localId]);
+  }
+
+  const past = await getDisponibilidadReprogramar(id, "?fecha=2000-01-01");
+  assert.equal(past.status, 200);
+  assert.deepEqual(past.data, { fecha: "2000-01-01", duracionMinutos: 60, slots: [] });
+});
+
+test("PET-09E.1 excluye el turno consultado pero conserva conflictos de otros turnos PET", async () => {
+  const target = await turnoExistente("10:00", "11:00", "activo", 0);
+  let result = await getDisponibilidadReprogramar(target);
+  assert.equal(result.status, 200);
+  let data = result.data as { duracionMinutos: number; slots: Array<{ horaInicio: string; horaFin: string }> };
+  assert.equal(data.duracionMinutos, 60);
+  assert.ok(data.slots.some(slot => slot.horaInicio === "10:00"), "el turno propio no ocupa su nuevo destino");
+
+  const otherPet = await segundaMascota();
+  await crearTurnoLocal(localId, otherPet, clienteId, servicioId, "10:30", "11:30");
+  result = await getDisponibilidadReprogramar(target);
+  data = result.data as { duracionMinutos: number; slots: Array<{ horaInicio: string; horaFin: string }> };
+  assert.ok(!data.slots.some(slot => slot.horaInicio === "10:00"), "otro turno PET sigue bloqueando el intervalo solapado");
+});
+
+test("PET-09E.1 calcula con snapshots aunque servicio/extra estén desligados y el catálogo cambie", async () => {
+  const id = await turnoExistente("10:00", "11:00", "activo", 0);
+  await pool.query("INSERT INTO turno_extras (turno_id, extra_id, nombre_snapshot, duracion_minutos) VALUES (?, ?, 'Extra historical snapshot', 15)", [id, extraId]);
+  await pool.query("UPDATE servicios SET nombre = 'Live service changed', duracion = 240 WHERE id = ?", [servicioId]);
+  await pool.query("UPDATE mascota_servicios SET duracion_minutos = 200 WHERE local_id = ? AND mascota_id = ? AND servicio_id = ?", [localId, mascotaId, servicioId]);
+  await pool.query("UPDATE extras SET nombre = 'Live extra changed' WHERE id = ?", [extraId]);
+  await pool.query("UPDATE mascota_extras SET duracion_minutos = 180 WHERE local_id = ? AND mascota_id = ? AND extra_id = ?", [localId, mascotaId, extraId]);
+  await pool.query("UPDATE turnos SET servicio_id = NULL WHERE id = ? AND local_id = ?", [id, localId]);
+  await pool.query("UPDATE turno_extras SET extra_id = NULL WHERE turno_id = ?", [id]);
+  const before = await leerCamposTurno(id);
+  const [extrasBefore] = await pool.query<RowDataPacket[]>("SELECT extra_id,nombre_snapshot,duracion_minutos FROM turno_extras WHERE turno_id = ?", [id]);
+
+  const result = await getDisponibilidadReprogramar(id);
+  assert.equal(result.status, 200);
+  const data = result.data as { duracionMinutos: number; slots: Array<{ horaInicio: string; horaFin: string }> };
+  assert.equal(data.duracionMinutos, 75);
+  assert.ok(data.slots.some(slot => slot.horaInicio === "10:00" && slot.horaFin === "11:15"));
+  assert.deepEqual(await leerCamposTurno(id), before, "GET no modifica el turno");
+  const [extrasAfter] = await pool.query<RowDataPacket[]>("SELECT extra_id,nombre_snapshot,duracion_minutos FROM turno_extras WHERE turno_id = ?", [id]);
+  assert.deepEqual(extrasAfter, extrasBefore, "GET no modifica turno_extras");
+});
+
+test("PET-09E.1 usa alta_exigencia actual, no el snapshot histórico, y requiere settings actuales", async () => {
+  const id = await turnoExistente("10:00", "11:00", "activo", 1);
+  // El snapshot histórico es high-demand, pero la mascota actual es normal y no necesita settings.
+  await pool.query("UPDATE mascotas SET alta_exigencia = 0 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  let result = await getDisponibilidadReprogramar(id);
+  assert.equal(result.status, 200);
+  assert.ok((result.data as { slots: Array<{ horaInicio: string }> }).slots.some(slot => slot.horaInicio === "10:00"));
+
+  // La clasificación actual high-demand aplica settings aunque el snapshot viejo fuera normal.
+  await pool.query("UPDATE turnos SET alta_exigencia_snapshot = 0 WHERE id = ?", [id]);
+  await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  result = await getDisponibilidadReprogramar(id);
+  assert.equal(result.status, 409);
+  assert.equal(result.data.code, "PET_HIGH_DEMAND_SETTINGS_REQUIRED");
+
+  await settings("MAX_PER_DAY", 1);
+  result = await getDisponibilidadReprogramar(id);
+  assert.equal(result.status, 200);
+  assert.ok((result.data as { slots: Array<{ horaInicio: string }> }).slots.some(slot => slot.horaInicio === "10:00"),
+    "MAX_PER_DAY excluye el propio turno aunque su snapshot histórico sea false");
+
+  await settings("MIN_GAP", 60);
+  result = await getDisponibilidadReprogramar(id);
+  assert.equal(result.status, 200);
+  assert.ok((result.data as { slots: Array<{ horaInicio: string }> }).slots.some(slot => slot.horaInicio === "10:00"),
+    "MIN_GAP excluye el propio turno aunque su snapshot histórico sea false");
+});
+
+test("PET-09E.1 rechaza mascota inactiva con la misma política del PATCH", async () => {
+  const id = await turnoExistente("10:00", "11:00", "activo", 0);
+  await pool.query("UPDATE mascotas SET activo = 0 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  const result = await getDisponibilidadReprogramar(id);
+  assert.equal(result.status, 409);
+  assert.equal(result.data.code, "PET_MASCOTA_INACTIVA");
 });

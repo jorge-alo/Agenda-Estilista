@@ -227,7 +227,7 @@ async function obtenerTurnosPet(reader: SqlReader, localId: number, fecha: strin
   return { occupiedIntervals, highDemandIntervals, highDemandCount };
 }
 
-function formatearSlots(slots: AvailableInterval[]): Array<{ horaInicio: string; horaFin: string }> {
+export function formatearSlots(slots: AvailableInterval[]): Array<{ horaInicio: string; horaFin: string }> {
   return slots.map(slot => ({
     horaInicio: minutosAHora(slot.startMinutes),
     horaFin: minutosAHora(slot.endMinutes),

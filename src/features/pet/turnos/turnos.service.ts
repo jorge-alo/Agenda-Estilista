@@ -1,7 +1,7 @@
 import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { pool } from "../../../config/db";
 import { calcularDuracionTotal, horaAMinutos, minutosAHora } from "../disponibilidad/disponibilidad.engine";
-import { obtenerSettingsHighDemand, prepararDisponibilidad, prepararSlotsPorContexto } from "../disponibilidad/disponibilidad.service";
+import { formatearSlots, obtenerSettingsHighDemand, prepararDisponibilidad, prepararSlotsPorContexto } from "../disponibilidad/disponibilidad.service";
 import { TurnoPetError, type ConsultaListadoTurnosPet, type CrearTurnoPetPayload, type ReprogramarTurnoPetPayload, type TurnoPetAdminListado, type TurnoPetCreado, type TurnoPetReprogramado } from "./turnos.types";
 
 interface LocalRow extends RowDataPacket { business_type: string }
@@ -42,6 +42,11 @@ interface TurnoExtraListadoRow extends RowDataPacket {
   extra_id: number | null;
   nombre_snapshot: string;
   duracion_minutos: number;
+}
+interface TurnoDisponibilidadReprogramarRow extends RowDataPacket {
+  mascota_id: number;
+  estado: string | null;
+  duracion_servicio_snapshot: number | null;
 }
 
 export async function crearTurnoPet(localId: number, data: CrearTurnoPetPayload): Promise<TurnoPetCreado> {
@@ -265,6 +270,59 @@ export function cancelarTurnoPet(localId: number, turnoId: number) {
 
 export function completarTurnoPet(localId: number, turnoId: number) {
   return cambiarEstadoTurnoPet(localId, turnoId, "completado");
+}
+
+export async function obtenerDisponibilidadReprogramarTurnoPet(
+  localId: number,
+  turnoId: number,
+  fecha: string,
+): Promise<{ fecha: string; duracionMinutos: number; slots: Array<{ horaInicio: string; horaFin: string }> }> {
+  // Read-only snapshot; the PATCH reprogramar transaction remains authoritative.
+  const [turnos] = await pool.query<TurnoDisponibilidadReprogramarRow[]>(
+    `SELECT mascota_id, estado, duracion_servicio_snapshot
+     FROM turnos
+     WHERE id = ? AND local_id = ? AND mascota_id IS NOT NULL`,
+    [turnoId, localId],
+  );
+  if (!turnos.length) throw new TurnoPetError(404, "PET_TURNO_NOT_FOUND", "Turno no encontrado");
+  const turno = turnos[0];
+  if (turno.estado !== "activo") {
+    throw new TurnoPetError(409, "PET_TURNO_STATE_NOT_REPROGRAMMABLE", "Solo se pueden reprogramar turnos PET activos");
+  }
+  if (turno.duracion_servicio_snapshot === null) {
+    throw new TurnoPetError(500, "PET_TURNO_SNAPSHOT_INVALID", "El turno no tiene duración de servicio válida");
+  }
+
+  const [extras] = await pool.query<ExtraSnapshotRow[]>(
+    "SELECT duracion_minutos FROM turno_extras WHERE turno_id = ? ORDER BY id",
+    [turnoId],
+  );
+  const duracionMinutos = calcularDuracionTotal(
+    turno.duracion_servicio_snapshot,
+    extras.map(extra => extra.duracion_minutos),
+  );
+
+  const [mascotas] = await pool.query<MascotaHighDemandRow[]>(
+    "SELECT activo, alta_exigencia FROM mascotas WHERE id = ? AND local_id = ?",
+    [turno.mascota_id, localId],
+  );
+  if (!mascotas.length) throw new TurnoPetError(404, "PET_MASCOTA_NOT_FOUND", "Mascota no encontrada");
+  if (mascotas[0].activo !== 1) throw new TurnoPetError(409, "PET_MASCOTA_INACTIVA", "La mascota no está activa");
+  if (mascotas[0].alta_exigencia !== 0 && mascotas[0].alta_exigencia !== 1) {
+    throw new TurnoPetError(500, "PET_TURNO_SNAPSHOT_INVALID", "La clasificación actual de la mascota es inválida");
+  }
+
+  const altaExigencia = mascotas[0].alta_exigencia === 1;
+  const settings = altaExigencia ? await obtenerSettingsHighDemand(pool, localId) : null;
+  const slots = await prepararSlotsPorContexto(pool, localId, {
+    fecha,
+    duracionMinutos,
+    altaExigencia,
+    settings,
+    excludeTurnoId: turnoId,
+  });
+
+  return { fecha, duracionMinutos, slots: formatearSlots(slots) };
 }
 
 export async function listarTurnosPetAdmin(
