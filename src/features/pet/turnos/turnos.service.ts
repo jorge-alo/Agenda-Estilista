@@ -20,6 +20,7 @@ interface TurnoPetSnapshotRow extends RowDataPacket {
 }
 interface MascotaHighDemandRow extends RowDataPacket { activo: number; alta_exigencia: number }
 interface ExtraSnapshotRow extends RowDataPacket { duracion_minutos: number }
+interface TurnoEstadoRow extends RowDataPacket { estado: string }
 
 export async function crearTurnoPet(localId: number, data: CrearTurnoPetPayload): Promise<TurnoPetCreado> {
   const connection = await pool.getConnection();
@@ -180,4 +181,66 @@ export async function reprogramarTurnoPet(
   } finally {
     connection.release();
   }
+}
+
+async function cambiarEstadoTurnoPet(
+  localId: number,
+  turnoId: number,
+  nuevoEstado: "cancelado" | "completado",
+): Promise<{ id: number; estado: "cancelado" | "completado" }> {
+  const code = nuevoEstado === "cancelado"
+    ? "PET_TURNO_STATE_NOT_CANCELLABLE"
+    : "PET_TURNO_STATE_NOT_COMPLETABLE";
+  const action = nuevoEstado === "cancelado" ? "cancelar" : "completar";
+  const connection = await pool.getConnection();
+  let transactionStarted = false;
+  try {
+    await connection.beginTransaction();
+    transactionStarted = true;
+    const [locales] = await connection.query<LocalRow[]>(
+      "SELECT id, business_type FROM locales WHERE id = ? FOR UPDATE", [localId],
+    );
+    if (!locales.length) throw new TurnoPetError(404, "PET_LOCAL_NOT_FOUND", "Local no encontrado");
+    if (locales[0].business_type !== "PET_GROOMING") {
+      throw new TurnoPetError(403, "PET_LOCAL_REQUIRED", "Funcionalidad solo para PET_GROOMING");
+    }
+
+    const [turnos] = await connection.query<TurnoEstadoRow[]>(
+      `SELECT estado FROM turnos
+       WHERE id = ? AND local_id = ? AND mascota_id IS NOT NULL
+       FOR UPDATE`,
+      [turnoId, localId],
+    );
+    if (!turnos.length) throw new TurnoPetError(404, "PET_TURNO_NOT_FOUND", "Turno no encontrado");
+    if (turnos[0].estado !== "activo") {
+      throw new TurnoPetError(409, code, `Solo se pueden ${action} turnos PET activos`);
+    }
+
+    const [result] = await connection.query<ResultSetHeader>(
+      `UPDATE turnos
+       SET estado = ?
+       WHERE id = ? AND local_id = ? AND mascota_id IS NOT NULL AND estado = 'activo'`,
+      [nuevoEstado, turnoId, localId],
+    );
+    if (result.affectedRows !== 1) {
+      throw new TurnoPetError(409, code, `Solo se pueden ${action} turnos PET activos`);
+    }
+
+    await connection.commit();
+    transactionStarted = false;
+    return { id: turnoId, estado: nuevoEstado };
+  } catch (error: unknown) {
+    if (transactionStarted) await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export function cancelarTurnoPet(localId: number, turnoId: number) {
+  return cambiarEstadoTurnoPet(localId, turnoId, "cancelado");
+}
+
+export function completarTurnoPet(localId: number, turnoId: number) {
+  return cambiarEstadoTurnoPet(localId, turnoId, "completado");
 }

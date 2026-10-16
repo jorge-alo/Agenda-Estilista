@@ -8,6 +8,7 @@ import jwt from "jsonwebtoken";
 import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { pool } from "../../../config/db";
 import petRouter from "../pet.routes";
+import { TurnosRouter } from "../../turnos/turnos.routes";
 import type { TurnoPetCreado } from "./turnos.types";
 import { contextoTemporalArgentina } from "../disponibilidad/disponibilidad.service";
 import { horaAMinutos, minutosAHora } from "../disponibilidad/disponibilidad.engine";
@@ -73,6 +74,61 @@ async function patchTurno(turnoId: string | number, payload: unknown, target: nu
     });
     req.on("error", reject);
     req.end(payload === undefined ? undefined : JSON.stringify(payload));
+  });
+}
+
+async function patchEstadoPet(accion: "cancelar" | "completar", turnoId: string | number, target: number | null = localId, rol = "admin") {
+  const token = target === null ? undefined : jwt.sign({ userId: 1, localId: target, rol }, secret, { expiresIn: "1m" });
+  return new Promise<{ status: number; data: Record<string, unknown> }>((resolve, reject) => {
+    const req = request({ hostname: "127.0.0.1", port, method: "PATCH",
+      path: `/api/pet/admin/turnos/${turnoId}/${accion}`,
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    }, res => {
+      let content = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk: string) => { content += chunk; });
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, data: JSON.parse(content) as Record<string, unknown> }));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+async function patchLegacyEstado(accion: "cancelar" | "completar", turnoId: number, target: number) {
+  const token = jwt.sign({ userId: 1, localId: target, rol: "admin" }, secret, { expiresIn: "1m" });
+  return new Promise<{ status: number; data: Record<string, unknown> }>((resolve, reject) => {
+    const req = request({ hostname: "127.0.0.1", port, method: "PATCH",
+      path: `/api/turnos/${turnoId}/${accion}`,
+      headers: { Authorization: `Bearer ${token}` },
+    }, res => {
+      let content = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk: string) => { content += chunk; });
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, data: JSON.parse(content) as Record<string, unknown> }));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+async function getDisponibilidadPet(): Promise<{ status: number; data: { slots: Array<{ horaInicio: string; horaFin: string }> } }> {
+  const token = jwt.sign({ userId: 1, localId, rol: "admin" }, secret, { expiresIn: "1m" });
+  const query = new URLSearchParams({ mascotaId: String(mascotaId), servicioId: String(servicioId), fecha });
+  return new Promise((resolve, reject) => {
+    const req = request({ hostname: "127.0.0.1", port, method: "GET",
+      path: `/api/pet/admin/disponibilidad?${query.toString()}`,
+      headers: { Authorization: `Bearer ${token}` },
+    }, res => {
+      let content = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk: string) => { content += chunk; });
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, data: JSON.parse(content) as { slots: Array<{ horaInicio: string; horaFin: string }> } }));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end();
   });
 }
 
@@ -142,6 +198,7 @@ before(async () => {
   const app = express();
   app.use(express.json());
   app.use("/api/pet/admin", petRouter);
+  app.use("/api/turnos", TurnosRouter);
   server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -153,6 +210,8 @@ beforeEach(async t => {
   assert.ok("mock" in t);
   t.mock.property(process, "env", { JWT_SECRET: secret });
   await pool.query("DELETE FROM turnos WHERE local_id = ? AND mascota_id IS NOT NULL", [localId]);
+  await pool.query("DELETE FROM turnos WHERE local_id IN (?, ?) AND cliente_nombre = 'PET08B.4 fixture'", [localId, beautyLocal]);
+  await pool.query("DELETE FROM estilistas WHERE local_id IN (?, ?) AND nombre = 'PET08B.4 stylist'", [localId, beautyLocal]);
   await pool.query("DELETE FROM pet_settings WHERE local_id = ?", [localId]);
   await pool.query("DELETE FROM horarios_local WHERE local_id = ?", [localId]);
   await pool.query("DELETE FROM bloqueos_local WHERE local_id = ?", [localId]);
@@ -178,6 +237,8 @@ after(async () => {
   try {
     for (const id of locales) {
       await pool.query("DELETE FROM turnos WHERE local_id = ? AND mascota_id IS NOT NULL", [id]);
+      await pool.query("DELETE FROM turnos WHERE local_id = ? AND cliente_nombre = 'PET08B.4 fixture'", [id]);
+      await pool.query("DELETE FROM estilistas WHERE local_id = ? AND nombre = 'PET08B.4 stylist'", [id]);
       await pool.query("DELETE FROM mascota_clientes WHERE local_id = ?", [id]);
       await pool.query("DELETE FROM mascota_servicios WHERE local_id = ?", [id]);
       await pool.query("DELETE FROM mascota_extras WHERE local_id = ?", [id]);
@@ -382,6 +443,25 @@ async function leerTurnoPet(id: number) {
      FROM turnos WHERE id = ? AND local_id = ? AND mascota_id IS NOT NULL`, [id, localId]);
   assert.equal(rows.length, 1);
   return rows[0];
+}
+
+async function leerCamposTurno(id: number): Promise<Record<string, unknown>> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT DATE_FORMAT(fecha,'%Y-%m-%d') AS fecha, hora, hora_fin, mascota_id, cliente_id,
+            servicio_id, estado, alta_exigencia_snapshot, cliente_nombre, cliente_telefono,
+            servicio_nombre_snapshot, duracion_servicio_snapshot, created_at
+     FROM turnos WHERE id = ? AND local_id = ?`, [id, localId]);
+  assert.equal(rows.length, 1);
+  return { ...rows[0] };
+}
+
+async function crearTurnoBeautyFixture(targetLocal: number, stylistId: number, hora: string): Promise<number> {
+  const [result] = await pool.query<ResultSetHeader>(
+    `INSERT INTO turnos (local_id, fecha, hora, hora_fin, estilista_id, mascota_id, cliente_nombre,
+       cliente_telefono, estado) VALUES (?, ?, ?, ?, ?, NULL, 'PET08B.4 fixture', 'test', 'activo')`,
+    [targetLocal, fecha, hora, `${String(Number(hora.slice(0, 2)) + 1).padStart(2, "0")}:00`, stylistId],
+  );
+  return result.insertId;
 }
 
 async function esperarEsperaReal(threadId: number): Promise<void> {
@@ -1008,4 +1088,133 @@ test("PET-08B.3.2 rollback de A libera lock y B reprograma; snapshots siguen int
   assert.deepEqual(extrasAfter.map(row => ({ extra_id: row.extra_id, nombre_snapshot: row.nombre_snapshot, duracion_minutos: row.duracion_minutos })),
     extrasBefore.map(row => ({ extra_id: row.extra_id, nombre_snapshot: row.nombre_snapshot, duracion_minutos: row.duracion_minutos })));
   assert.equal(await turnosDelDia(), 1);
+});
+
+test("PATCH cancelar/completar requiere auth admin y valida ID/turno PET tenant-safe", async () => {
+  const id = await turnoExistente("09:00", "10:00", "activo", 0);
+  for (const action of ["cancelar", "completar"] as const) {
+    assert.equal((await patchEstadoPet(action, id, null)).status, 401);
+    assert.equal((await patchEstadoPet(action, id, localId, "superadmin")).status, 403);
+    assert.equal((await patchEstadoPet(action, "bad-id")).status, 400);
+    assert.equal((await patchEstadoPet(action, 2147483647)).status, 404);
+  }
+
+  const foreignId = await crearTurnoLocal(otroLocal, mascotaAjenaId, clienteAjenoId, servicioAjenoId, "09:00", "10:00");
+  const stylist = await crear("locales", "INSERT INTO locales (nombre, slug, business_type) VALUES ('Unused PET08B.4 local', ?, 'PET_GROOMING')", [randomUUID()]);
+  await pool.query("DELETE FROM locales WHERE id = ?", [stylist]);
+  const [staff] = await pool.query<ResultSetHeader>("INSERT INTO estilistas (nombre, local_id) VALUES ('PET08B.4 stylist', ?)", [localId]);
+  const [beauty] = await pool.query<ResultSetHeader>(
+    `INSERT INTO turnos (local_id, fecha, hora, hora_fin, estilista_id, mascota_id, cliente_nombre, cliente_telefono, estado)
+     VALUES (?, ?, '09:00', '10:00', ?, NULL, 'PET08B.4 fixture', 'test', 'activo')`, [localId, fecha, staff.insertId]);
+  for (const action of ["cancelar", "completar"] as const) {
+    assert.equal((await patchEstadoPet(action, foreignId)).status, 404);
+    assert.equal((await patchEstadoPet(action, beauty.insertId)).status, 404);
+  }
+  await pool.query("DELETE FROM turnos WHERE id = ? AND local_id = ?", [beauty.insertId, localId]);
+  await pool.query("DELETE FROM estilistas WHERE id = ? AND local_id = ?", [staff.insertId, localId]);
+});
+
+test("PET activo puede cancelarse/completarse y solo cambia estado, snapshots y extras intactos", async () => {
+  for (const action of ["cancelar", "completar"] as const) {
+    const created = await post(body({ extraIds: [extraId] }));
+    assert.equal(created.status, 201);
+    const id = Number(created.data.id);
+    const before = await leerCamposTurno(id);
+    const [extrasBefore] = await pool.query<RowDataPacket[]>(
+      "SELECT extra_id,nombre_snapshot,duracion_minutos FROM turno_extras WHERE turno_id = ? ORDER BY id", [id]);
+    const result = await patchEstadoPet(action, id);
+    const expectedState = action === "cancelar" ? "cancelado" : "completado";
+    assert.deepEqual([result.status, result.data.id, result.data.estado], [200, id, expectedState]);
+    assert.deepEqual(Object.keys(result.data).sort(), ["estado", "id"]);
+    const afterState = await leerCamposTurno(id);
+    const { estado: _oldState, ...beforeWithoutState } = before;
+    const { estado: _newState, ...afterWithoutState } = afterState;
+    assert.deepEqual(afterWithoutState, beforeWithoutState);
+    const [extrasAfter] = await pool.query<RowDataPacket[]>(
+      "SELECT extra_id,nombre_snapshot,duracion_minutos FROM turno_extras WHERE turno_id = ? ORDER BY id", [id]);
+    const normalize = (rows: RowDataPacket[]) => rows.map(row => ({
+      extra_id: row.extra_id, nombre_snapshot: row.nombre_snapshot, duracion_minutos: row.duracion_minutos,
+    }));
+    assert.deepEqual(normalize(extrasAfter), normalize(extrasBefore));
+  }
+});
+
+test("segunda cancelación/completado y transiciones desde pendiente o estado final devuelven 409", async () => {
+  const cancelId = await turnoExistente("09:00", "10:00", "activo", 0);
+  assert.equal((await patchEstadoPet("cancelar", cancelId)).status, 200);
+  assert.equal((await patchEstadoPet("cancelar", cancelId)).data.code, "PET_TURNO_STATE_NOT_CANCELLABLE");
+  assert.equal((await patchEstadoPet("completar", cancelId)).data.code, "PET_TURNO_STATE_NOT_COMPLETABLE");
+
+  const completeId = await turnoExistente("10:00", "11:00", "activo", 0);
+  assert.equal((await patchEstadoPet("completar", completeId)).status, 200);
+  assert.equal((await patchEstadoPet("completar", completeId)).data.code, "PET_TURNO_STATE_NOT_COMPLETABLE");
+  assert.equal((await patchEstadoPet("cancelar", completeId)).data.code, "PET_TURNO_STATE_NOT_CANCELLABLE");
+
+  for (const state of ["pendiente_pago", "cancelado", "completado"] as const) {
+    const id = await turnoExistente("11:00", "12:00", state, 0);
+    assert.equal((await patchEstadoPet("cancelar", id)).data.code, "PET_TURNO_STATE_NOT_CANCELLABLE", state);
+    assert.equal((await patchEstadoPet("completar", id)).data.code, "PET_TURNO_STATE_NOT_COMPLETABLE", state);
+    const [rows] = await pool.query<(RowDataPacket & { estado: string })[]>("SELECT estado FROM turnos WHERE id = ?", [id]);
+    assert.equal(rows[0].estado, state);
+  }
+});
+
+test("las rutas BEAUTY legacy no modifican PET y siguen operando sobre turnos BEAUTY reales", async () => {
+  for (const action of ["cancelar", "completar"] as const) {
+    const petId = await turnoExistente("09:00", "10:00", "activo", 0);
+    const denied = await patchLegacyEstado(action, petId, localId);
+    assert.equal(denied.status, 404, action);
+    const [petRows] = await pool.query<(RowDataPacket & { estado: string })[]>("SELECT estado FROM turnos WHERE id = ?", [petId]);
+    assert.equal(petRows[0].estado, "activo");
+    await pool.query("DELETE FROM turnos WHERE id = ? AND local_id = ?", [petId, localId]);
+  }
+
+  const [staff] = await pool.query<ResultSetHeader>("INSERT INTO estilistas (nombre, local_id) VALUES ('PET08B.4 stylist', ?)", [beautyLocal]);
+  const cancelBeauty = await crearTurnoBeautyFixture(beautyLocal, staff.insertId, "09:00");
+  const completeBeauty = await crearTurnoBeautyFixture(beautyLocal, staff.insertId, "10:00");
+  assert.deepEqual((await patchLegacyEstado("cancelar", cancelBeauty, beautyLocal)).data, { message: "Turno cancelado" });
+  assert.deepEqual((await patchLegacyEstado("completar", completeBeauty, beautyLocal)).data, { message: "Turno completado" });
+  const [rows] = await pool.query<(RowDataPacket & { id: number; estado: string })[]>(
+    "SELECT id,estado FROM turnos WHERE id IN (?, ?) ORDER BY id", [cancelBeauty, completeBeauty]);
+  assert.deepEqual(rows.map(row => row.estado), ["cancelado", "completado"]);
+  await pool.query("DELETE FROM turnos WHERE id IN (?, ?)", [cancelBeauty, completeBeauty]);
+  await pool.query("DELETE FROM estilistas WHERE id = ? AND local_id = ?", [staff.insertId, beautyLocal]);
+});
+
+test("cancelar libera slot y elimina high-demand de MIN_GAP/MAX_PER_DAY", async () => {
+  await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  await settings("MAX_PER_DAY", 1);
+  const created = await post(body({ extraIds: [] }));
+  assert.equal(created.status, 201);
+  const id = Number(created.data.id);
+  assert.deepEqual((await getDisponibilidadPet()).data.slots, []);
+  assert.equal((await patchEstadoPet("cancelar", id)).status, 200);
+  let slots = (await getDisponibilidadPet()).data.slots;
+  assert.ok(slots.some(slot => slot.horaInicio === "09:00"));
+
+  await settings("MIN_GAP", 60);
+  slots = (await getDisponibilidadPet()).data.slots;
+  assert.ok(slots.some(slot => slot.horaInicio === "09:00"), "cancelado no participa en MIN_GAP");
+});
+
+test("completar libera ocupación, pero el high-demand completado conserva MIN_GAP y MAX_PER_DAY", async () => {
+  await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  await settings("MIN_GAP", 60);
+  const created = await post(body());
+  assert.equal(created.status, 201);
+  const id = Number(created.data.id);
+  assert.equal((await patchEstadoPet("completar", id)).status, 200);
+
+  // A normal candidate ignores high-demand separation; completed must not occupy the interval physically.
+  await pool.query("UPDATE mascotas SET alta_exigencia = 0 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  let slots = (await getDisponibilidadPet()).data.slots;
+  assert.ok(slots.some(slot => slot.horaInicio === "09:00"), "completado no bloquea físicamente");
+
+  await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  slots = (await getDisponibilidadPet()).data.slots;
+  assert.ok(!slots.some(slot => slot.horaInicio === "09:00"));
+  assert.ok(slots.some(slot => slot.horaInicio === "11:00"), "completado participa en MIN_GAP");
+
+  await settings("MAX_PER_DAY", 1);
+  assert.deepEqual((await getDisponibilidadPet()).data.slots, [], "completado cuenta en MAX_PER_DAY");
 });

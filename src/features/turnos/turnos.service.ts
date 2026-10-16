@@ -403,7 +403,7 @@ export const getDisponibilidad = async (
 
 export const cancelarTurno = async (id: number, localId: number) => {
   const [result] = await pool.query<ResultSetHeader>(
-    "UPDATE turnos SET estado = 'cancelado' WHERE id = ? AND local_id = ?",
+    "UPDATE turnos SET estado = 'cancelado' WHERE id = ? AND local_id = ? AND estilista_id IS NOT NULL",
     [id, localId]
   );
 
@@ -435,7 +435,7 @@ export const getTurnosFuturos = async (localId: number) => {
 
 export const completarTurno = async (id: number, localId: number) => {
   const [result] = await pool.query<ResultSetHeader>(
-    "UPDATE turnos SET estado = 'completado' WHERE id = ? AND local_id = ?",
+    "UPDATE turnos SET estado = 'completado' WHERE id = ? AND local_id = ? AND estilista_id IS NOT NULL",
     [id, localId]
   );
 
