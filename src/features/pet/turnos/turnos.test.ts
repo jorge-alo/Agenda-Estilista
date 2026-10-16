@@ -561,7 +561,7 @@ async function requestsTurnoConLockRetenido(
   t: TestContext,
   startFirst: () => Promise<ConcurrentRequestResult>,
   startSecond: () => Promise<ConcurrentRequestResult>,
-  options: { failFirstUpdate?: boolean } = {},
+  options: { failFirstUpdate?: boolean; failFirstStateUpdate?: boolean } = {},
 ): Promise<[ConcurrentRequestResult, ConcurrentRequestResult]> {
   const firstLocked = barrier<void>();
   const releaseFirstLockQuery = barrier<void>();
@@ -595,8 +595,10 @@ async function requestsTurnoConLockRetenido(
           return result;
         });
       }
-      if (options.failFirstUpdate && connection === firstConnection && typeof statement === "string"
-        && /^\s*UPDATE turnos\s+SET fecha/s.test(statement)) {
+      const isInjectedFailure = typeof statement === "string"
+        && ((options.failFirstUpdate && /^\s*UPDATE turnos\s+SET fecha/s.test(statement))
+          || (options.failFirstStateUpdate && /^\s*UPDATE turnos\s+SET estado/s.test(statement)));
+      if (isInjectedFailure && connection === firstConnection) {
         firstAtUpdate.resolve();
         return releaseFirstUpdateFailure.promise.then(() => {
           throw new Error("PET08B.3.2 fixture: fallo UPDATE de reprogramación");
@@ -615,7 +617,7 @@ async function requestsTurnoConLockRetenido(
     await esperarEsperaReal(waitingThread);
     assert.equal(secondLockAcquired, false, "la segunda operación sigue esperando el lock local");
     releaseFirstLockQuery.resolve();
-    if (options.failFirstUpdate) {
+    if (options.failFirstUpdate || options.failFirstStateUpdate) {
       await firstAtUpdate.promise;
       assert.equal(secondLockAcquired, false, "B debe seguir esperando mientras A prepara el rollback");
       releaseFirstUpdateFailure.resolve();
@@ -1217,4 +1219,154 @@ test("completar libera ocupación, pero el high-demand completado conserva MIN_G
 
   await settings("MAX_PER_DAY", 1);
   assert.deepEqual((await getDisponibilidadPet()).data.slots, [], "completado cuenta en MAX_PER_DAY");
+});
+
+test("PET-08B.4.2 cancelar vs completar: gana el primer lock y el segundo recibe conflicto", { timeout: 30000 }, async t => {
+  const cancelFirst = await turnoExistente("09:00", "10:00", "activo", 0);
+  await pool.query("INSERT INTO turno_extras (turno_id, extra_id, nombre_snapshot, duracion_minutos) VALUES (?, ?, 'State race extra', 15)", [cancelFirst, extraId]);
+  const beforeCancel = await leerCamposTurno(cancelFirst);
+  const [cancelResult, completeRejected] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchEstadoPet("cancelar", cancelFirst),
+    () => patchEstadoPet("completar", cancelFirst),
+  );
+  assert.equal(cancelResult.status, 200);
+  assert.deepEqual([completeRejected.status, completeRejected.data.code], [409, "PET_TURNO_STATE_NOT_COMPLETABLE"]);
+  assert.equal((await leerTurnoPet(cancelFirst)).estado, "cancelado");
+  const afterCancel = await leerCamposTurno(cancelFirst);
+  const { estado: _cancelBeforeState, ...cancelBeforeSnapshots } = beforeCancel;
+  const { estado: _cancelAfterState, ...cancelAfterSnapshots } = afterCancel;
+  assert.deepEqual(cancelAfterSnapshots, cancelBeforeSnapshots);
+  const [cancelExtras] = await pool.query<RowDataPacket[]>("SELECT extra_id,nombre_snapshot,duracion_minutos FROM turno_extras WHERE turno_id = ?", [cancelFirst]);
+  assert.deepEqual(cancelExtras, [{ extra_id: extraId, nombre_snapshot: "State race extra", duracion_minutos: 15 }]);
+  assert.ok((await getDisponibilidadPet()).data.slots.some(slot => slot.horaInicio === "09:00"), "cancelado libera el slot");
+
+  const completeFirst = await turnoExistente("10:00", "11:00", "activo", 0);
+  const [completeResult, cancelRejected] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchEstadoPet("completar", completeFirst),
+    () => patchEstadoPet("cancelar", completeFirst),
+  );
+  assert.equal(completeResult.status, 200);
+  assert.deepEqual([cancelRejected.status, cancelRejected.data.code], [409, "PET_TURNO_STATE_NOT_CANCELLABLE"]);
+  assert.equal((await leerTurnoPet(completeFirst)).estado, "completado");
+});
+
+test("PET-08B.4.2 cancelar primero hace que reprogramación relea cancelado y responda 409", { timeout: 30000 }, async t => {
+  const id = await turnoExistente("09:00", "10:00", "activo", 0);
+  const before = await leerCamposTurno(id);
+  const [cancelResult, reprogramRejected] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchEstadoPet("cancelar", id),
+    () => patchTurno(id, { fecha, hora: "14:00" }),
+  );
+  assert.equal(cancelResult.status, 200);
+  assert.deepEqual([reprogramRejected.status, reprogramRejected.data.code], [409, "PET_TURNO_STATE_NOT_REPROGRAMMABLE"]);
+  const final = await leerCamposTurno(id);
+  assert.deepEqual([final.estado, final.fecha, final.hora, final.hora_fin], ["cancelado", before.fecha, before.hora, before.hora_fin]);
+  const { estado: _beforeState, ...beforeWithoutState } = before;
+  const { estado: _finalState, ...finalWithoutState } = final;
+  assert.deepEqual(finalWithoutState, beforeWithoutState);
+});
+
+test("PET-08B.4.2 reprogramar primero permite luego cancelar el horario ya movido", { timeout: 30000 }, async t => {
+  await agregarHorarioTarde();
+  const id = await turnoExistente("09:00", "10:00", "activo", 0);
+  const [reprogramResult, cancelResult] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchTurno(id, { fecha, hora: "14:00" }),
+    () => patchEstadoPet("cancelar", id),
+  );
+  assert.equal(reprogramResult.status, 200);
+  assert.deepEqual([cancelResult.status, cancelResult.data.estado], [200, "cancelado"]);
+  assert.deepEqual([(await leerTurnoPet(id)).fecha, (await leerTurnoPet(id)).hora, (await leerTurnoPet(id)).estado],
+    [fecha, "14:00:00", "cancelado"]);
+});
+
+test("PET-08B.4.2 completar primero hace que reprogramación relea completado y responda 409", { timeout: 30000 }, async t => {
+  const id = await turnoExistente("09:00", "10:00", "activo", 0);
+  const [completeResult, reprogramRejected] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchEstadoPet("completar", id),
+    () => patchTurno(id, { fecha, hora: "14:00" }),
+  );
+  assert.equal(completeResult.status, 200);
+  assert.deepEqual([reprogramRejected.status, reprogramRejected.data.code], [409, "PET_TURNO_STATE_NOT_REPROGRAMMABLE"]);
+  const final = await leerTurnoPet(id);
+  assert.deepEqual([final.estado, final.hora, final.hora_fin], ["completado", "09:00:00", "10:00:00"]);
+});
+
+test("PET-08B.4.2 reprogramar primero permite completar después en el nuevo horario", { timeout: 30000 }, async t => {
+  await agregarHorarioTarde();
+  const id = await turnoExistente("09:00", "10:00", "activo", 0);
+  const [reprogramResult, completeResult] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchTurno(id, { fecha, hora: "14:00" }),
+    () => patchEstadoPet("completar", id),
+  );
+  assert.equal(reprogramResult.status, 200);
+  assert.deepEqual([completeResult.status, completeResult.data.estado], [200, "completado"]);
+  assert.deepEqual([(await leerTurnoPet(id)).hora, (await leerTurnoPet(id)).hora_fin, (await leerTurnoPet(id)).estado],
+    ["14:00:00", "15:00:00", "completado"]);
+});
+
+test("PET-08B.4.2 dos cancelaciones y dos completados no son idempotentes", { timeout: 30000 }, async t => {
+  for (const [action, errorCode, hora] of [
+    ["cancelar", "PET_TURNO_STATE_NOT_CANCELLABLE", "09:00"],
+    ["completar", "PET_TURNO_STATE_NOT_COMPLETABLE", "10:00"],
+  ] as const) {
+    const id = await turnoExistente(hora, action === "cancelar" ? "10:00" : "11:00", "activo", 0);
+    const [first, second] = await requestsTurnoConLockRetenido(
+      t,
+      () => patchEstadoPet(action, id),
+      () => patchEstadoPet(action, id),
+    );
+    assert.equal(first.status, 200, action);
+    assert.deepEqual([second.status, second.data.code], [409, errorCode], action);
+    assert.equal((await leerTurnoPet(id)).estado, action === "cancelar" ? "cancelado" : "completado");
+  }
+});
+
+test("PET-08B.4.2 completar high-demand libera físicamente pero sigue en MIN/MAX tras la carrera", { timeout: 30000 }, async t => {
+  await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  await settings("MIN_GAP", 60);
+  const id = await turnoExistente("09:00", "10:00", "activo", 1);
+  const [completeResult, reprogramRejected] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchEstadoPet("completar", id),
+    () => patchTurno(id, { fecha, hora: "14:00" }),
+  );
+  assert.equal(completeResult.status, 200);
+  assert.equal(reprogramRejected.status, 409);
+  assert.equal((await leerTurnoPet(id)).estado, "completado");
+
+  await pool.query("UPDATE mascotas SET alta_exigencia = 0 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  let slots = (await getDisponibilidadPet()).data.slots;
+  assert.ok(slots.some(slot => slot.horaInicio === "09:00"), "completado no bloquea físicamente");
+  await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  slots = (await getDisponibilidadPet()).data.slots;
+  assert.ok(!slots.some(slot => slot.horaInicio === "09:00"));
+  assert.ok(slots.some(slot => slot.horaInicio === "11:00"), "completado sigue participando en MIN_GAP");
+  await settings("MAX_PER_DAY", 1);
+  assert.deepEqual((await getDisponibilidadPet()).data.slots, [], "completado sigue contando en MAX_PER_DAY");
+});
+
+test("PET-08B.4.2 rollback de completar libera lock y cancelar opera sobre el turno activo original", { timeout: 30000 }, async t => {
+  const id = await turnoExistente("09:00", "10:00", "activo", 0);
+  await pool.query("INSERT INTO turno_extras (turno_id, extra_id, nombre_snapshot, duracion_minutos) VALUES (?, ?, 'State rollback extra', 15)", [id, extraId]);
+  const before = await leerCamposTurno(id);
+  const [completeFailed, cancelResult] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchEstadoPet("completar", id),
+    () => patchEstadoPet("cancelar", id),
+    { failFirstStateUpdate: true },
+  );
+  assert.equal(completeFailed.status, 500);
+  assert.deepEqual([cancelResult.status, cancelResult.data.estado], [200, "cancelado"]);
+  const final = await leerCamposTurno(id);
+  const { estado: _beforeState, ...beforeWithoutState } = before;
+  const { estado: _finalState, ...finalWithoutState } = final;
+  assert.deepEqual(finalWithoutState, beforeWithoutState);
+  const [extras] = await pool.query<RowDataPacket[]>("SELECT extra_id,nombre_snapshot,duracion_minutos FROM turno_extras WHERE turno_id = ?", [id]);
+  assert.deepEqual(extras, [{ extra_id: extraId, nombre_snapshot: "State rollback extra", duracion_minutos: 15 }]);
 });
