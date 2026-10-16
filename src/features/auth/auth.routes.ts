@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import { forgotPassword, login, resetPassword } from "./auth.controller";
+import { forgotPassword, login, me, resetPassword } from "./auth.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
 import rateLimit from "express-rate-limit";
 
@@ -25,15 +25,7 @@ export interface AuthRequest extends Request {
 export const AuthRouter = Router();
 
 AuthRouter.post("/login", loginLimiter, login);
-AuthRouter.get("/me", authMiddleware, (req: AuthRequest, res: Response) => {
-    const nombreLocal = req.user.nombreLocal
-    return res.json({
-        status: "Ok",
-        nombreLocal,
-        telefono: req.user.telefono,
-        localId: req.user.localId,
-    })
-});
+AuthRouter.get("/me", authMiddleware, me);
 
 AuthRouter.post("/forgot-password", forgotPasswordLimiter, forgotPassword);
 AuthRouter.post("/reset-password", resetPassword);

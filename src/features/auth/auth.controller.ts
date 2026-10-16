@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken"
 import dotenv from 'dotenv'
 dotenv.config();
 import * as authService from "./auth.service"
+import type { AuthRequest } from "../../middlewares/auth.middleware";
 
 export const login = async (req: Request, res: Response) => {
     try {
@@ -66,4 +67,31 @@ export const resetPassword = async (req: Request, res: Response) => {
     }
     res.status(500).json({ error: "Error al restablecer la contraseña" });
   }
+};
+
+export const me = async (req: AuthRequest, res: Response) => {
+  const localId: unknown = req.user?.localId;
+  let businessType = null;
+
+  if (localId !== null && localId !== undefined) {
+    if (typeof localId !== "number" || !Number.isSafeInteger(localId) || localId < 1 || localId > 2147483647) {
+      return res.status(401).json({ error: "Token inválido" });
+    }
+    try {
+      businessType = await authService.getBusinessTypeForLocal(localId);
+    } catch (error: unknown) {
+      if (error instanceof authService.AuthMeError) {
+        return res.status(error.status).json({ error: error.message, code: error.code });
+      }
+      return res.status(500).json({ error: "Error obteniendo contexto del local" });
+    }
+  }
+
+  return res.json({
+    status: "Ok",
+    nombreLocal: req.user?.nombreLocal,
+    telefono: req.user?.telefono,
+    localId,
+    businessType,
+  });
 };

@@ -2,6 +2,30 @@ import bcrypt from "bcrypt";
 import { pool } from "../../config/db";
 import crypto from "crypto";
 import { emailService } from "../../shared/services/email.service";
+import { isBusinessType, type BusinessType } from "../../shared/types/businessType";
+import type { RowDataPacket } from "mysql2/promise";
+
+interface LocalBusinessTypeRow extends RowDataPacket {
+  business_type: unknown;
+}
+
+export class AuthMeError extends Error {
+  constructor(public readonly status: number, public readonly code: string, message: string) {
+    super(message);
+  }
+}
+
+export const getBusinessTypeForLocal = async (localId: number): Promise<BusinessType> => {
+  const [rows] = await pool.query<LocalBusinessTypeRow[]>(
+    "SELECT business_type FROM locales WHERE id = ?",
+    [localId],
+  );
+  if (!rows.length) throw new AuthMeError(404, "LOCAL_NOT_FOUND", "Local no encontrado");
+  if (!isBusinessType(rows[0].business_type)) {
+    throw new AuthMeError(500, "LOCAL_BUSINESS_TYPE_INVALID", "Tipo de negocio inválido en el local");
+  }
+  return rows[0].business_type;
+};
 
 export const loginUser = async (email: string, password: string) => {
   const [rows]: any = await pool.query(
