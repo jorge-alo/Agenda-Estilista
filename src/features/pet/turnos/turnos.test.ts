@@ -9,6 +9,8 @@ import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { pool } from "../../../config/db";
 import petRouter from "../pet.routes";
 import type { TurnoPetCreado } from "./turnos.types";
+import { contextoTemporalArgentina } from "../disponibilidad/disponibilidad.service";
+import { horaAMinutos, minutosAHora } from "../disponibilidad/disponibilidad.engine";
 
 const secret = "PET08B1_TEST_ONLY";
 const fecha = "2099-10-20";
@@ -56,6 +58,24 @@ async function post(payload: unknown = body(), target: number | null = localId, 
   });
 }
 
+async function patchTurno(turnoId: string | number, payload: unknown, target: number | null = localId, rol = "admin") {
+  const token = target === null ? undefined : jwt.sign({ userId: 1, localId: target, rol }, secret, { expiresIn: "1m" });
+  return new Promise<{ status: number; data: Record<string, unknown> }>((resolve, reject) => {
+    const req = request({ hostname: "127.0.0.1", port, method: "PATCH",
+      path: `/api/pet/admin/turnos/${turnoId}/reprogramar`,
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    }, res => {
+      let content = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk: string) => { content += chunk; });
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, data: JSON.parse(content) as Record<string, unknown> }));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end(payload === undefined ? undefined : JSON.stringify(payload));
+  });
+}
+
 async function totalTurnos(): Promise<number> {
   const [rows] = await pool.query<(RowDataPacket & { total: number })[]>(
     "SELECT COUNT(*) AS total FROM turnos WHERE local_id = ? AND mascota_id IS NOT NULL", [localId],
@@ -63,14 +83,35 @@ async function totalTurnos(): Promise<number> {
   return rows[0].total;
 }
 
-async function turnoExistente(hora: string, horaFin: string, estado: string, alta: number): Promise<void> {
-  await pool.query(
+async function turnoExistente(hora: string, horaFin: string, estado: string, alta: number): Promise<number> {
+  const [result] = await pool.query<ResultSetHeader>(
     `INSERT INTO turnos (local_id, fecha, hora, hora_fin, estilista_id, mascota_id, cliente_id,
        cliente_nombre, cliente_telefono, servicio_id, servicio_nombre_snapshot,
        duracion_servicio_snapshot, alta_exigencia_snapshot, estado, pago_id)
      VALUES (?, ?, ?, ?, NULL, ?, ?, 'Fixture PET08B', 'test', ?, 'Service fixture', 60, ?, ?, NULL)`,
     [localId, fecha, hora, horaFin, mascotaId, clienteId, servicioId, alta, estado],
   );
+  return result.insertId;
+}
+
+async function crearTurnoLocal(
+  targetLocal: number,
+  pet: number,
+  client: number,
+  service: number | null,
+  hora: string,
+  horaFin: string,
+  state = "activo",
+  alta = 0,
+): Promise<number> {
+  const [result] = await pool.query<ResultSetHeader>(
+    `INSERT INTO turnos (local_id, fecha, hora, hora_fin, estilista_id, mascota_id, cliente_id,
+       cliente_nombre, cliente_telefono, servicio_id, servicio_nombre_snapshot,
+       duracion_servicio_snapshot, alta_exigencia_snapshot, estado, pago_id)
+     VALUES (?, ?, ?, ?, NULL, ?, ?, 'Fixture PET08B', 'test', ?, 'Service fixture', 60, ?, ?, NULL)`,
+    [targetLocal, fecha, hora, horaFin, pet, client, service, alta, state],
+  );
+  return result.insertId;
 }
 
 async function settings(rule: "MIN_GAP" | "MAX_PER_DAY", value: number): Promise<void> {
@@ -120,8 +161,9 @@ beforeEach(async t => {
   await pool.query("DELETE FROM mascota_extras WHERE local_id = ?", [localId]);
   await pool.query("DELETE FROM mascotas WHERE local_id = ? AND id <> ? AND nombre = 'PET08B.2 pet'", [localId, mascotaId]);
   await pool.query("UPDATE mascotas SET activo = 1, alta_exigencia = 0 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
-  await pool.query("UPDATE servicios SET activo = 1 WHERE id = ? AND local_id = ?", [servicioId, localId]);
-  await pool.query("UPDATE extras SET activo = 1 WHERE local_id = ?", [localId]);
+  await pool.query("UPDATE servicios SET nombre = 'Service fixture', duracion = 99, activo = 1 WHERE id = ? AND local_id = ?", [servicioId, localId]);
+  await pool.query("UPDATE extras SET nombre = CASE id WHEN ? THEN 'Extra PET08B one' WHEN ? THEN 'Extra PET08B two' ELSE nombre END, activo = 1 WHERE local_id = ?",
+    [extraId, extraDosId, localId]);
   await pool.query("INSERT INTO mascota_clientes (local_id, mascota_id, cliente_id) VALUES (?, ?, ?)", [localId, mascotaId, clienteId]);
   await pool.query("INSERT INTO mascota_servicios (local_id, mascota_id, servicio_id, duracion_minutos) VALUES (?, ?, ?, 60)", [localId, mascotaId, servicioId]);
   await pool.query("INSERT INTO mascota_extras (local_id, mascota_id, extra_id, duracion_minutos) VALUES (?, ?, ?, 15), (?, ?, ?, 25)",
@@ -502,4 +544,213 @@ test("PET-08B.2 rollback tras lock libera B: no quedan turno ni extra parciales"
      JOIN turnos t ON t.id = te.turno_id
      WHERE t.local_id = ? AND t.fecha = ? AND t.mascota_id IS NOT NULL`, [localId, fecha]);
   assert.equal(rows[0].total, 0);
+});
+
+test("PATCH exige auth/rol admin y body exacto", async () => {
+  const id = await turnoExistente("09:00", "10:00", "activo", 0);
+  assert.equal((await patchTurno(id, { fecha: "2099-10-20", hora: "10:00" }, null)).status, 401);
+  assert.equal((await patchTurno(id, { fecha: "2099-10-20", hora: "10:00" }, localId, "superadmin")).status, 403);
+  for (const invalid of [
+    {}, { fecha, hora: "10:00", mascotaId }, { fecha, hora: "10:00", localId },
+    { fecha: "2099-02-30", hora: "10:00" }, { fecha, hora: "9:00" },
+    { fecha, hora: "10:00", extraIds: [] }, { fecha, hora: 1000 },
+  ]) assert.equal((await patchTurno(id, invalid)).status, 400, JSON.stringify(invalid));
+  assert.equal((await patchTurno("abc", { fecha, hora: "10:00" })).status, 400);
+});
+
+test("turno inexistente, BEAUTY o de otro local se oculta como 404", async () => {
+  assert.equal((await patchTurno(2147483647, { fecha, hora: "10:00" })).status, 404);
+  const beautyStyle = await crear("locales", "INSERT INTO locales (nombre, slug, business_type) VALUES ('Spare PET local', ?, 'PET_GROOMING')", [randomUUID()]);
+  // This orphan test local has no shared PET fixtures; create a stylist and a BEAUTY-shaped row in the actual fixture tenant.
+  await pool.query("DELETE FROM locales WHERE id = ?", [beautyStyle]);
+  const [stylist] = await pool.query<ResultSetHeader>("INSERT INTO estilistas (nombre, local_id) VALUES ('PET08B.3 beauty stylist', ?)", [localId]);
+  const [beauty] = await pool.query<ResultSetHeader>(
+    `INSERT INTO turnos (local_id, fecha, hora, hora_fin, estilista_id, mascota_id, cliente_nombre,
+       cliente_telefono, estado) VALUES (?, ?, '09:00', '10:00', ?, NULL, 'PET08B.3 beauty', 'test', 'activo')`,
+    [localId, fecha, stylist.insertId],
+  );
+  assert.equal((await patchTurno(beauty.insertId, { fecha, hora: "10:00" })).status, 404);
+  await pool.query("DELETE FROM turnos WHERE id = ? AND local_id = ?", [beauty.insertId, localId]);
+  await pool.query("DELETE FROM estilistas WHERE id = ? AND local_id = ?", [stylist.insertId, localId]);
+
+  const foreignTurn = await crearTurnoLocal(otroLocal, mascotaAjenaId, clienteAjenoId, servicioAjenoId, "09:00", "10:00");
+  assert.equal((await patchTurno(foreignTurn, { fecha, hora: "10:00" })).status, 404);
+});
+
+test("solo un turno activo se reprograma; pendiente, cancelado y completado devuelven 409", async () => {
+  for (const state of ["pendiente_pago", "cancelado", "completado"] as const) {
+    const id = await turnoExistente("09:00", "10:00", state, 0);
+    const response = await patchTurno(id, { fecha, hora: "10:00" });
+    assert.equal(response.status, 409, state);
+    assert.equal(response.data.code, "PET_TURNO_STATE_NOT_REPROGRAMMABLE");
+    await pool.query("DELETE FROM turnos WHERE id = ? AND local_id = ?", [id, localId]);
+  }
+  assert.equal((await patchTurno(await turnoExistente("09:00", "10:00", "activo", 0), { fecha, hora: "10:00" })).status, 200);
+});
+
+test("reprograma dentro de la misma fecha, incluso al mismo horario, excluyendo su propio turno", async () => {
+  const id = await turnoExistente("09:00", "10:00", "activo", 0);
+  const same = await patchTurno(id, { fecha, hora: "09:00" });
+  assert.equal(same.status, 200);
+  assert.equal((same.data as { horaFin: string }).horaFin, "10:00");
+  const moved = await patchTurno(id, { fecha, hora: "10:00" });
+  assert.deepEqual([moved.status, moved.data.hora, moved.data.horaFin], [200, "10:00", "11:00"]);
+  const [rows] = await pool.query<(RowDataPacket & { total: number })[]>("SELECT COUNT(*) AS total FROM turnos WHERE id = ?", [id]);
+  assert.equal(rows[0].total, 1);
+});
+
+test("cambia fecha/día y recalcula el fin con la duración snapshot", async () => {
+  const id = await turnoExistente("09:00", "10:00", "activo", 0);
+  const nuevaFecha = "2099-10-21";
+  const nuevoDia = new Date(Date.UTC(2099, 9, 21)).getUTCDay();
+  await pool.query("INSERT INTO horarios_local (local_id, dia_semana, hora_inicio, hora_fin) VALUES (?, ?, '14:00', '17:00')", [localId, nuevoDia]);
+  const result = await patchTurno(id, { fecha: nuevaFecha, hora: "14:30" });
+  assert.deepEqual([result.status, result.data.fecha, result.data.hora, result.data.horaFin], [200, nuevaFecha, "14:30", "15:30"]);
+});
+
+test("conserva cliente/servicio/extras snapshot e ignora catálogo actual y FK desligadas", async () => {
+  const created = await post(body({ extraIds: [extraId, extraDosId] }));
+  assert.equal(created.status, 201);
+  const id = Number(created.data.id);
+  const [before] = await pool.query<(RowDataPacket & {
+    cliente_nombre: string; cliente_telefono: string; servicio_nombre_snapshot: string;
+    duracion_servicio_snapshot: number;
+  })[]>("SELECT cliente_nombre, cliente_telefono, servicio_nombre_snapshot, duracion_servicio_snapshot FROM turnos WHERE id = ?", [id]);
+  const [extrasBefore] = await pool.query<RowDataPacket[]>(
+    "SELECT extra_id, nombre_snapshot, duracion_minutos FROM turno_extras WHERE turno_id = ? ORDER BY id", [id]);
+  await pool.query("UPDATE servicios SET nombre = 'Changed service', duracion = 240 WHERE id = ?", [servicioId]);
+  await pool.query("UPDATE mascota_servicios SET duracion_minutos = 200 WHERE local_id = ? AND mascota_id = ? AND servicio_id = ?", [localId, mascotaId, servicioId]);
+  await pool.query("UPDATE extras SET nombre = 'Changed extra' WHERE id = ?", [extraId]);
+  await pool.query("UPDATE mascota_extras SET duracion_minutos = 180 WHERE local_id = ? AND mascota_id = ? AND extra_id = ?", [localId, mascotaId, extraId]);
+  await pool.query("UPDATE turnos SET servicio_id = NULL, cliente_id = NULL WHERE id = ? AND local_id = ?", [id, localId]);
+  await pool.query("UPDATE turno_extras SET extra_id = NULL WHERE turno_id = ? AND extra_id = ?", [id, extraId]);
+
+  const result = await patchTurno(id, { fecha, hora: "10:00" });
+  assert.deepEqual([result.status, result.data.horaFin, result.data.clienteId, result.data.servicioId], [200, "11:40", null, null]);
+  const [turnos] = await pool.query<(RowDataPacket & {
+    cliente_nombre: string; cliente_telefono: string; servicio_nombre_snapshot: string;
+    duracion_servicio_snapshot: number; hora_fin: string;
+  })[]>("SELECT * FROM turnos WHERE id = ? AND local_id = ?", [id, localId]);
+  assert.deepEqual([
+    turnos[0].cliente_nombre, turnos[0].cliente_telefono, turnos[0].servicio_nombre_snapshot,
+    turnos[0].duracion_servicio_snapshot,
+  ], [before[0].cliente_nombre, before[0].cliente_telefono, before[0].servicio_nombre_snapshot, before[0].duracion_servicio_snapshot]);
+  assert.equal(turnos[0].hora_fin, "11:40:00");
+  const [extrasAfter] = await pool.query<RowDataPacket[]>(
+    "SELECT extra_id, nombre_snapshot, duracion_minutos FROM turno_extras WHERE turno_id = ? ORDER BY id", [id]);
+  const normalizeExtras = (rows: RowDataPacket[]) => rows.map(row => ({
+    extra_id: row.extra_id,
+    nombre_snapshot: row.nombre_snapshot,
+    duracion_minutos: row.duracion_minutos,
+  }));
+  assert.deepEqual(normalizeExtras(extrasAfter), normalizeExtras(extrasBefore).map(row => ({
+    ...row, extra_id: row.extra_id === extraId ? null : row.extra_id,
+  })));
+});
+
+test("valida destino contra ocupación, bloqueos, horario y grilla", async () => {
+  const id = await turnoExistente("09:00", "10:00", "activo", 0);
+  const secondPet = await segundaMascota();
+  await crearTurnoLocal(localId, secondPet, clienteId, servicioId, "10:00", "11:00");
+  assert.equal((await patchTurno(id, { fecha, hora: "10:00" })).data.code, "PET_SLOT_UNAVAILABLE");
+  await pool.query("DELETE FROM turnos WHERE local_id = ? AND mascota_id = ?", [localId, secondPet]);
+
+  await pool.query("INSERT INTO bloqueos_local (local_id, fecha, hora_inicio, hora_fin, es_dia_completo) VALUES (?, ?, '10:00', '11:00', 0)", [localId, fecha]);
+  assert.equal((await patchTurno(id, { fecha, hora: "10:00" })).data.code, "PET_SLOT_UNAVAILABLE");
+  await pool.query("DELETE FROM bloqueos_local WHERE local_id = ? AND fecha = ?", [localId, fecha]);
+  assert.equal((await patchTurno(id, { fecha, hora: "12:30" })).data.code, "PET_SLOT_UNAVAILABLE");
+  assert.equal((await patchTurno(id, { fecha, hora: "09:15" })).data.code, "PET_SLOT_UNAVAILABLE");
+  assert.equal((await patchTurno(id, { fecha: "2000-01-01", hora: "10:00" })).data.code, "PET_SLOT_UNAVAILABLE");
+});
+
+test("rechaza hora pasada hoy en zona ART", async () => {
+  const id = await turnoExistente("09:00", "10:00", "activo", 0);
+  const now = contextoTemporalArgentina();
+  const pastStart = Math.floor((now.minimumStartMinutes - 30) / 30) * 30;
+  if (pastStart < 0) return;
+  const [year, month, day] = now.fecha.split("-").map(Number);
+  const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  await pool.query("INSERT INTO horarios_local (local_id, dia_semana, hora_inicio, hora_fin) VALUES (?, ?, '00:00', '23:59')", [localId, weekday]);
+  const response = await patchTurno(id, { fecha: now.fecha, hora: minutosAHora(pastStart) });
+  assert.equal(response.status, 409);
+  assert.equal(response.data.code, "PET_SLOT_UNAVAILABLE");
+});
+
+test("snapshot high-demand se actualiza desde la mascota y settings actuales", async () => {
+  const id = await turnoExistente("09:00", "10:00", "activo", 0);
+  await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  await settings("MIN_GAP", 30);
+  const result = await patchTurno(id, { fecha, hora: "10:30" });
+  assert.equal(result.status, 200);
+  const [rows] = await pool.query<(RowDataPacket & { alta_exigencia_snapshot: number })[]>("SELECT alta_exigencia_snapshot FROM turnos WHERE id = ?", [id]);
+  assert.equal(rows[0].alta_exigencia_snapshot, 1);
+
+  await pool.query("UPDATE mascotas SET alta_exigencia = 0 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  const next = await patchTurno(id, { fecha, hora: "11:00" });
+  assert.equal(next.status, 200);
+  const [updated] = await pool.query<(RowDataPacket & { alta_exigencia_snapshot: number })[]>("SELECT alta_exigencia_snapshot FROM turnos WHERE id = ?", [id]);
+  assert.equal(updated[0].alta_exigencia_snapshot, 0);
+});
+
+test("excluye el turno actual de MIN_GAP y MAX_PER_DAY durante su propia reprogramación", async () => {
+  for (const [rule, value, snapshot] of [["MIN_GAP", 60, 1], ["MAX_PER_DAY", 1, 1]] as const) {
+    await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+    await settings(rule, value);
+    const id = await turnoExistente("09:00", "10:00", "activo", snapshot);
+    const result = await patchTurno(id, { fecha, hora: "10:00" });
+    assert.equal(result.status, 200, rule);
+    await pool.query("DELETE FROM turnos WHERE id = ? AND local_id = ?", [id, localId]);
+    await pool.query("DELETE FROM pet_settings WHERE local_id = ?", [localId]);
+  }
+});
+
+test("MAX_PER_DAY incluye otros completed high-demand y settings ausentes dejan el original intacto", async () => {
+  await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  const target = await turnoExistente("09:00", "10:00", "activo", 0);
+  await settings("MAX_PER_DAY", 1);
+  await turnoExistente("08:00", "09:00", "completado", 1);
+  const denied = await patchTurno(target, { fecha, hora: "10:00" });
+  assert.equal(denied.status, 409);
+  assert.equal(denied.data.code, "PET_SLOT_UNAVAILABLE");
+  await pool.query("DELETE FROM pet_settings WHERE local_id = ?", [localId]);
+  const noSettings = await patchTurno(target, { fecha, hora: "10:00" });
+  assert.equal(noSettings.status, 409);
+  assert.equal(noSettings.data.code, "PET_HIGH_DEMAND_SETTINGS_REQUIRED");
+  const [rows] = await pool.query<(RowDataPacket & { fecha: string; hora: string; alta_exigencia_snapshot: number })[]>(
+    "SELECT DATE_FORMAT(fecha,'%Y-%m-%d') AS fecha,hora,alta_exigencia_snapshot FROM turnos WHERE id = ?", [target]);
+  assert.deepEqual([rows[0].fecha, rows[0].hora, rows[0].alta_exigencia_snapshot], [fecha, "09:00:00", 0]);
+});
+
+test("mascota inactiva rechaza y conserva el turno original", async () => {
+  const id = await turnoExistente("09:00", "10:00", "activo", 0);
+  await pool.query("UPDATE mascotas SET activo = 0 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  const result = await patchTurno(id, { fecha, hora: "10:00" });
+  assert.equal(result.status, 409);
+  const [rows] = await pool.query<(RowDataPacket & { hora: string })[]>("SELECT hora FROM turnos WHERE id = ?", [id]);
+  assert.equal(rows[0].hora, "09:00:00");
+});
+
+test("error inducido en UPDATE hace rollback y conserva turno/extras", async t => {
+  const created = await post(body({ extraIds: [extraId] }));
+  assert.equal(created.status, 201);
+  const id = Number(created.data.id);
+  const originalGetConnection = pool.getConnection.bind(pool);
+  t.mock.method(pool, "getConnection", async () => {
+    const connection = await originalGetConnection();
+    const query = connection.query.bind(connection);
+    t.mock.method(connection, "query", ((...args: Parameters<typeof connection.query>) => {
+      const sql: unknown = args[0];
+      if (typeof sql === "string" && /^\s*UPDATE turnos\s+SET fecha/s.test(sql)) throw new Error("PET08B.3 fixture UPDATE failure");
+      return query(...args);
+    }) as typeof connection.query);
+    return connection;
+  });
+  const failed = await patchTurno(id, { fecha, hora: "10:00" });
+  assert.equal(failed.status, 500);
+  const [rows] = await pool.query<(RowDataPacket & { fecha: string; hora: string; hora_fin: string; alta_exigencia_snapshot: number })[]>(
+    "SELECT DATE_FORMAT(fecha,'%Y-%m-%d') AS fecha,hora,hora_fin,alta_exigencia_snapshot FROM turnos WHERE id = ?", [id]);
+  assert.deepEqual([rows[0].fecha, rows[0].hora, rows[0].hora_fin, rows[0].alta_exigencia_snapshot], [fecha, "09:00:00", "10:15:00", 0]);
+  const [extras] = await pool.query<(RowDataPacket & { extra_id: number; nombre_snapshot: string; duracion_minutos: number })[]>(
+    "SELECT extra_id,nombre_snapshot,duracion_minutos FROM turno_extras WHERE turno_id = ?", [id]);
+  assert.deepEqual(extras, [{ extra_id: extraId, nombre_snapshot: "Extra PET08B one", duracion_minutos: 15 }]);
 });

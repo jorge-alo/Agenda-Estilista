@@ -190,16 +190,18 @@ async function obtenerBloqueos(reader: SqlReader, localId: number, fecha: string
   });
 }
 
-async function obtenerTurnosPet(reader: SqlReader, localId: number, fecha: string): Promise<{
+async function obtenerTurnosPet(reader: SqlReader, localId: number, fecha: string, excludeTurnoId?: number): Promise<{
   occupiedIntervals: MinuteInterval[];
   highDemandIntervals: MinuteInterval[];
   highDemandCount: number;
 }> {
+  const exclusion = excludeTurnoId === undefined ? "" : " AND id <> ?";
+  const values = excludeTurnoId === undefined ? [localId, fecha] : [localId, fecha, excludeTurnoId];
   const [rows] = await reader.query<TurnoPetRow[]>(
     `SELECT hora, hora_fin, estado, alta_exigencia_snapshot
      FROM turnos
-     WHERE local_id = ? AND fecha = ? AND mascota_id IS NOT NULL`,
-    [localId, fecha],
+     WHERE local_id = ? AND fecha = ? AND mascota_id IS NOT NULL${exclusion}`,
+    values,
   );
   const occupiedIntervals: MinuteInterval[] = [];
   const highDemandIntervals: MinuteInterval[] = [];
@@ -232,11 +234,71 @@ function formatearSlots(slots: AvailableInterval[]): Array<{ horaInicio: string;
   }));
 }
 
+export async function obtenerSettingsHighDemand(
+  reader: SqlReader,
+  localId: number,
+  lockSettings = false,
+): Promise<HighDemandSettings> {
+  const [rows] = await reader.query<SettingsRow[]>(
+    `SELECT high_demand_rule, high_demand_gap_minutes, high_demand_max_per_day
+     FROM pet_settings WHERE local_id = ?${lockSettings ? " FOR SHARE" : ""}`,
+    [localId],
+  );
+  if (!rows.length) {
+    throw new DisponibilidadPetError(409, "PET_HIGH_DEMAND_SETTINGS_REQUIRED", "El local debe configurar la regla de alta exigencia");
+  }
+  return traducirSettings(rows[0]);
+}
+
+export interface PrepararSlotsPetInput {
+  fecha: string;
+  duracionMinutos: number;
+  altaExigencia: boolean;
+  settings: HighDemandSettings | null;
+  excludeTurnoId?: number;
+}
+
+export async function prepararSlotsPorContexto(
+  reader: SqlReader,
+  localId: number,
+  input: PrepararSlotsPetInput,
+): Promise<AvailableInterval[]> {
+  if (input.altaExigencia && input.settings === null) {
+    throw new DisponibilidadPetError(409, "PET_HIGH_DEMAND_SETTINGS_REQUIRED", "El local debe configurar la regla de alta exigencia");
+  }
+  const temporal = contextoTemporalArgentina();
+  if (input.fecha < temporal.fecha) return [];
+
+  const [year, month, day] = input.fecha.split("-").map(Number);
+  const diaSemana = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  const schedules = await obtenerHorarios(reader, localId, diaSemana);
+  const blocks = await obtenerBloqueos(reader, localId, input.fecha);
+  const turns = await obtenerTurnosPet(reader, localId, input.fecha, input.excludeTurnoId);
+
+  const minimumStartMinutes = input.fecha === temporal.fecha ? temporal.minimumStartMinutes : null;
+  if (minimumStartMinutes !== null && minimumStartMinutes >= 1440) return [];
+
+  const highDemand = input.altaExigencia
+    ? input.settings?.rule === "MIN_GAP"
+      ? { isHighDemand: true, settings: input.settings, intervals: turns.highDemandIntervals }
+      : { isHighDemand: true, settings: input.settings, count: turns.highDemandCount }
+    : { isHighDemand: false, settings: null };
+
+  return calcularSlotsDisponibles({
+    schedules,
+    blocks,
+    durationMinutes: input.duracionMinutos,
+    occupiedIntervals: turns.occupiedIntervals,
+    minimumStartMinutes,
+    highDemand,
+  });
+}
+
 export async function prepararDisponibilidad(
   reader: SqlReader,
   localId: number,
   consulta: ConsultaDisponibilidadPet,
-  options: { lockSettings?: boolean } = {},
+  options: { lockSettings?: boolean; excludeTurnoId?: number } = {},
 ): Promise<ContextoDisponibilidadPet> {
   const [mascotas] = await reader.query<MascotaRow[]>(
     "SELECT id, activo, alta_exigencia FROM mascotas WHERE id = ? AND local_id = ?",
@@ -286,55 +348,19 @@ export async function prepararDisponibilidad(
 
   const duracionServicio = relacionesServicio[0].duracion_minutos;
   const duracionMinutos = calcularDuracionTotal(duracionServicio, extrasAplicados.map(extra => extra.duracionMinutos));
-  let settings: HighDemandSettings | null = null;
-  if (mascota.alta_exigencia === 1) {
-    const [rows] = await reader.query<SettingsRow[]>(
-      `SELECT high_demand_rule, high_demand_gap_minutes, high_demand_max_per_day
-       FROM pet_settings WHERE local_id = ?${options.lockSettings ? " FOR SHARE" : ""}`,
-      [localId],
-    );
-    if (!rows.length) {
-      throw new DisponibilidadPetError(409, "PET_HIGH_DEMAND_SETTINGS_REQUIRED", "El local debe configurar la regla de alta exigencia");
-    }
-    settings = traducirSettings(rows[0]);
-  }
-
-  const temporal = contextoTemporalArgentina();
+  const settings = mascota.alta_exigencia === 1
+    ? await obtenerSettingsHighDemand(reader, localId, options.lockSettings)
+    : null;
   const base = {
     duracionMinutos, duracionServicio, servicioNombre: servicios[0].nombre,
     altaExigencia: mascota.alta_exigencia as 0 | 1, extras: extrasAplicados,
   };
-  if (consulta.fecha < temporal.fecha) {
-    return { ...base, slots: [] };
-  }
-
-  const [year, month, day] = consulta.fecha.split("-").map(Number);
-  const diaSemana = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
-  // Sequential reads keep all POST decisions on the same locked connection.
-  const schedules = await obtenerHorarios(reader, localId, diaSemana);
-  const blocks = await obtenerBloqueos(reader, localId, consulta.fecha);
-  const turns = await obtenerTurnosPet(reader, localId, consulta.fecha);
-
-  const minimumStartMinutes = consulta.fecha === temporal.fecha
-    ? temporal.minimumStartMinutes
-    : null;
-  if (minimumStartMinutes !== null && minimumStartMinutes >= 1440) {
-    return { ...base, slots: [] };
-  }
-
-  const highDemand = mascota.alta_exigencia === 1
-    ? settings?.rule === "MIN_GAP"
-      ? { isHighDemand: true, settings, intervals: turns.highDemandIntervals }
-      : { isHighDemand: true, settings, count: turns.highDemandCount }
-    : { isHighDemand: false, settings: null };
-
-  const slots = calcularSlotsDisponibles({
-    schedules,
-    blocks,
-    durationMinutes: duracionMinutos,
-    occupiedIntervals: turns.occupiedIntervals,
-    minimumStartMinutes,
-    highDemand,
+  const slots = await prepararSlotsPorContexto(reader, localId, {
+    fecha: consulta.fecha,
+    duracionMinutos,
+    altaExigencia: mascota.alta_exigencia === 1,
+    settings,
+    excludeTurnoId: options.excludeTurnoId,
   });
 
   return { ...base, slots };
