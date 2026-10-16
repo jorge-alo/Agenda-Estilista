@@ -37,6 +37,38 @@ export interface TurnoPetReprogramado {
   servicioId: number | null;
 }
 
+export type ConsultaListadoTurnosPet =
+  | { fecha: string; desde?: never; hasta?: never }
+  | { fecha?: never; desde: string; hasta: string };
+
+export interface TurnoPetAdminListado {
+  id: number;
+  fecha: string;
+  hora: string;
+  horaFin: string | null;
+  estado: string | null;
+  mascota: {
+    id: number;
+    nombre: string;
+    altaExigenciaSnapshot: boolean | null;
+  };
+  responsable: {
+    id: number | null;
+    nombre: string;
+    telefono: string;
+  };
+  servicio: {
+    id: number | null;
+    nombre: string;
+    duracionMinutos: number;
+  };
+  extras: Array<{
+    id: number | null;
+    nombre: string;
+    duracionMinutos: number;
+  }>;
+}
+
 export class TurnoPetError extends Error {
   constructor(public readonly status: number, public readonly code: string, message: string) {
     super(message);

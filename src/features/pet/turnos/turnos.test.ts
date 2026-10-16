@@ -132,6 +132,24 @@ async function getDisponibilidadPet(): Promise<{ status: number; data: { slots: 
   });
 }
 
+async function getTurnosPet(path: string, target: number | null = localId, rol = "admin") {
+  const token = target === null ? undefined : jwt.sign({ userId: 1, localId: target, rol }, secret, { expiresIn: "1m" });
+  return new Promise<{ status: number; data: unknown }>((resolve, reject) => {
+    const req = request({ hostname: "127.0.0.1", port, method: "GET",
+      path: `/api/pet/admin/turnos${path}`,
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    }, res => {
+      let content = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk: string) => { content += chunk; });
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, data: JSON.parse(content) as unknown }));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 async function totalTurnos(): Promise<number> {
   const [rows] = await pool.query<(RowDataPacket & { total: number })[]>(
     "SELECT COUNT(*) AS total FROM turnos WHERE local_id = ? AND mascota_id IS NOT NULL", [localId],
@@ -139,13 +157,13 @@ async function totalTurnos(): Promise<number> {
   return rows[0].total;
 }
 
-async function turnoExistente(hora: string, horaFin: string, estado: string, alta: number): Promise<number> {
+async function turnoExistente(hora: string, horaFin: string, estado: string | null, alta: number, fechaTurno = fecha): Promise<number> {
   const [result] = await pool.query<ResultSetHeader>(
     `INSERT INTO turnos (local_id, fecha, hora, hora_fin, estilista_id, mascota_id, cliente_id,
        cliente_nombre, cliente_telefono, servicio_id, servicio_nombre_snapshot,
        duracion_servicio_snapshot, alta_exigencia_snapshot, estado, pago_id)
-     VALUES (?, ?, ?, ?, NULL, ?, ?, 'Fixture PET08B', 'test', ?, 'Service fixture', 60, ?, ?, NULL)`,
-    [localId, fecha, hora, horaFin, mascotaId, clienteId, servicioId, alta, estado],
+      VALUES (?, ?, ?, ?, NULL, ?, ?, 'Fixture PET08B', 'test', ?, 'Service fixture', 60, ?, ?, NULL)`,
+    [localId, fechaTurno, hora, horaFin, mascotaId, clienteId, servicioId, alta, estado],
   );
   return result.insertId;
 }
@@ -159,13 +177,14 @@ async function crearTurnoLocal(
   horaFin: string,
   state = "activo",
   alta = 0,
+  targetDate = fecha,
 ): Promise<number> {
   const [result] = await pool.query<ResultSetHeader>(
     `INSERT INTO turnos (local_id, fecha, hora, hora_fin, estilista_id, mascota_id, cliente_id,
        cliente_nombre, cliente_telefono, servicio_id, servicio_nombre_snapshot,
        duracion_servicio_snapshot, alta_exigencia_snapshot, estado, pago_id)
      VALUES (?, ?, ?, ?, NULL, ?, ?, 'Fixture PET08B', 'test', ?, 'Service fixture', 60, ?, ?, NULL)`,
-    [targetLocal, fecha, hora, horaFin, pet, client, service, alta, state],
+     [targetLocal, targetDate, hora, horaFin, pet, client, service, alta, state],
   );
   return result.insertId;
 }
@@ -1369,4 +1388,109 @@ test("PET-08B.4.2 rollback de completar libera lock y cancelar opera sobre el tu
   assert.deepEqual(finalWithoutState, beforeWithoutState);
   const [extras] = await pool.query<RowDataPacket[]>("SELECT extra_id,nombre_snapshot,duracion_minutos FROM turno_extras WHERE turno_id = ?", [id]);
   assert.deepEqual(extras, [{ extra_id: extraId, nombre_snapshot: "State rollback extra", duracion_minutos: 15 }]);
+});
+
+test("PET-09B GET turnos admin requiere auth/admin y valida fecha o rango estrictamente", async () => {
+  assert.equal((await getTurnosPet(`?fecha=${fecha}`, null)).status, 401);
+  assert.equal((await getTurnosPet(`?fecha=${fecha}`, localId, "superadmin")).status, 403);
+  assert.equal((await getTurnosPet(`?fecha=${fecha}`, beautyLocal)).status, 403);
+
+  const invalidQueries = [
+    "", "?", "?desde=2099-10-20", "?hasta=2099-10-26",
+    `?fecha=${fecha}&desde=2099-10-20&hasta=2099-10-26`,
+    "?fecha=2099-02-30", "?fecha=20-10-2099",
+    "?desde=2099-10-27&hasta=2099-10-20", "?fecha=2099-10-20&estado=activo",
+    `?fecha=${fecha}&fecha=2099-10-21`, "?desde=2099-10-20&hasta=2099-10-26&localId=1",
+  ];
+  for (const query of invalidQueries) assert.equal((await getTurnosPet(query)).status, 400, query);
+});
+
+test("PET-09B fecha única devuelve lista plana ordenada y todos los estados, incluso NULL", async () => {
+  const active = await turnoExistente("10:00", "11:00", "activo", 0);
+  const cancelled = await turnoExistente("09:00", "10:00", "cancelado", 0);
+  const completed = await turnoExistente("11:00", "12:00", "completado", 1);
+  const pending = await turnoExistente("12:00", "13:00", "pendiente_pago", 0);
+  const nullState = await turnoExistente("09:00", "10:00", null, 0);
+  const result = await getTurnosPet(`?fecha=${fecha}`);
+  assert.equal(result.status, 200);
+  const items = result.data as Array<{ id: number; hora: string; estado: string | null }>;
+  assert.deepEqual(items.map(item => [item.hora, item.id]), [
+    ["09:00", cancelled], ["09:00", nullState], ["10:00", active], ["11:00", completed], ["12:00", pending],
+  ]);
+  assert.deepEqual(new Set(items.map(item => item.estado)), new Set(["activo", "cancelado", "completado", "pendiente_pago", null]));
+});
+
+test("PET-09B rango es inclusivo en ambos extremos, abarca varios días y ordena fecha/hora/id", async () => {
+  const previous = await turnoExistente("12:00", "13:00", "activo", 0, "2099-10-19");
+  const first = await turnoExistente("09:00", "10:00", "activo", 0, fecha);
+  const sameHour = await turnoExistente("09:00", "10:00", "completado", 0, fecha);
+  const last = await turnoExistente("11:00", "12:00", "pendiente_pago", 0, "2099-10-21");
+  const outside = await turnoExistente("09:00", "10:00", "activo", 0, "2099-10-22");
+  const result = await getTurnosPet("?desde=2099-10-20&hasta=2099-10-21");
+  assert.equal(result.status, 200);
+  const items = result.data as Array<{ id: number; fecha: string; hora: string }>;
+  assert.deepEqual(items.map(item => [item.fecha, item.hora, item.id]), [
+    [fecha, "09:00", first], [fecha, "09:00", sameHour], ["2099-10-21", "11:00", last],
+  ]);
+  assert.ok(!items.some(item => item.id === previous || item.id === outside));
+});
+
+test("PET-09B sin resultados devuelve []; filtra otro tenant y filas BEAUTY del mismo local", async () => {
+  assert.deepEqual((await getTurnosPet(`?fecha=${fecha}`)).data, []);
+  const pet = await turnoExistente("09:00", "10:00", "activo", 0);
+  const foreignPet = await crearTurnoLocal(otroLocal, mascotaAjenaId, clienteAjenoId, servicioAjenoId, "09:30", "10:30");
+  const [stylist] = await pool.query<ResultSetHeader>("INSERT INTO estilistas (nombre, local_id) VALUES ('PET09B stylist', ?)", [localId]);
+  const beautyTurn = await crearTurnoBeautyFixture(localId, stylist.insertId, "08:00");
+  const result = await getTurnosPet(`?fecha=${fecha}`);
+  assert.deepEqual((result.data as Array<{ id: number }>).map(item => item.id), [pet]);
+  assert.ok(!(result.data as Array<{ id: number }>).some(item => item.id === foreignPet || item.id === beautyTurn));
+  await pool.query("DELETE FROM turnos WHERE id = ? AND local_id = ?", [beautyTurn, localId]);
+  await pool.query("DELETE FROM estilistas WHERE id = ? AND local_id = ?", [stylist.insertId, localId]);
+});
+
+test("PET-09B usa snapshots con IDs desligados, mascota inactiva/nombre actual y alta exigencia histórica", async () => {
+  const id = await turnoExistente("09:00", "10:00", "activo", 1);
+  await pool.query(
+    "INSERT INTO turno_extras (turno_id, extra_id, nombre_snapshot, duracion_minutos) VALUES (?, ?, 'Extra histórico', 15)",
+    [id, extraId],
+  );
+  await pool.query("UPDATE clientes SET nombre = 'Live customer name', telefono = '999000111' WHERE id = ? AND local_id = ?", [clienteId, localId]);
+  await pool.query("UPDATE servicios SET nombre = 'Live service name', duracion = 240 WHERE id = ? AND local_id = ?", [servicioId, localId]);
+  await pool.query("UPDATE extras SET nombre = 'Live extra name' WHERE id = ? AND local_id = ?", [extraId, localId]);
+  await pool.query("UPDATE mascotas SET nombre = 'Rocky renombrado', activo = 0, alta_exigencia = 0 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  await pool.query("UPDATE turnos SET cliente_id = NULL, servicio_id = NULL WHERE id = ? AND local_id = ?", [id, localId]);
+  await pool.query("UPDATE turno_extras SET extra_id = NULL WHERE turno_id = ?", [id]);
+
+  const result = await getTurnosPet(`?fecha=${fecha}`);
+  assert.equal(result.status, 200);
+  const items = result.data as Array<{
+    id: number; mascota: { id: number; nombre: string; altaExigenciaSnapshot: boolean | null };
+    responsable: { id: number | null; nombre: string; telefono: string };
+    servicio: { id: number | null; nombre: string; duracionMinutos: number };
+    extras: Array<{ id: number | null; nombre: string; duracionMinutos: number }>;
+  }>;
+  assert.deepEqual(items, [{
+    id,
+    fecha,
+    hora: "09:00",
+    horaFin: "10:00",
+    estado: "activo",
+    mascota: { id: mascotaId, nombre: "Rocky renombrado", altaExigenciaSnapshot: true },
+    responsable: { id: null, nombre: "Fixture PET08B", telefono: "test" },
+    servicio: { id: null, nombre: "Service fixture", duracionMinutos: 60 },
+    extras: [{ id: null, nombre: "Extra histórico", duracionMinutos: 15 }],
+  }]);
+});
+
+test("PET-09B extras se agrupan por turno sin mezclar filas entre IDs", async () => {
+  const firstId = await turnoExistente("09:00", "10:00", "activo", 0);
+  const secondId = await turnoExistente("10:00", "11:00", "activo", 0);
+  await pool.query("INSERT INTO turno_extras (turno_id, extra_id, nombre_snapshot, duracion_minutos) VALUES (?, ?, 'First extra', 10), (?, ?, 'Second extra', 20)",
+    [firstId, extraId, secondId, extraDosId]);
+  const result = await getTurnosPet(`?fecha=${fecha}`);
+  const items = result.data as Array<{ id: number; extras: Array<{ id: number | null; nombre: string; duracionMinutos: number }> }>;
+  assert.deepEqual(items.map(item => [item.id, item.extras]), [
+    [firstId, [{ id: extraId, nombre: "First extra", duracionMinutos: 10 }]],
+    [secondId, [{ id: extraDosId, nombre: "Second extra", duracionMinutos: 20 }]],
+  ]);
 });

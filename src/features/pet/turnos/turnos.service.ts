@@ -2,7 +2,7 @@ import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { pool } from "../../../config/db";
 import { calcularDuracionTotal, horaAMinutos, minutosAHora } from "../disponibilidad/disponibilidad.engine";
 import { obtenerSettingsHighDemand, prepararDisponibilidad, prepararSlotsPorContexto } from "../disponibilidad/disponibilidad.service";
-import { TurnoPetError, type CrearTurnoPetPayload, type ReprogramarTurnoPetPayload, type TurnoPetCreado, type TurnoPetReprogramado } from "./turnos.types";
+import { TurnoPetError, type ConsultaListadoTurnosPet, type CrearTurnoPetPayload, type ReprogramarTurnoPetPayload, type TurnoPetAdminListado, type TurnoPetCreado, type TurnoPetReprogramado } from "./turnos.types";
 
 interface LocalRow extends RowDataPacket { business_type: string }
 interface ClienteRow extends RowDataPacket { nombre: string; telefono: string }
@@ -21,6 +21,28 @@ interface TurnoPetSnapshotRow extends RowDataPacket {
 interface MascotaHighDemandRow extends RowDataPacket { activo: number; alta_exigencia: number }
 interface ExtraSnapshotRow extends RowDataPacket { duracion_minutos: number }
 interface TurnoEstadoRow extends RowDataPacket { estado: string }
+interface TurnoPetListadoRow extends RowDataPacket {
+  id: number;
+  fecha: string;
+  hora: string;
+  hora_fin: string | null;
+  estado: string | null;
+  mascota_id: number;
+  mascota_nombre: string;
+  alta_exigencia_snapshot: number | null;
+  cliente_id: number | null;
+  cliente_nombre: string;
+  cliente_telefono: string;
+  servicio_id: number | null;
+  servicio_nombre_snapshot: string;
+  duracion_servicio_snapshot: number;
+}
+interface TurnoExtraListadoRow extends RowDataPacket {
+  turno_id: number;
+  extra_id: number | null;
+  nombre_snapshot: string;
+  duracion_minutos: number;
+}
 
 export async function crearTurnoPet(localId: number, data: CrearTurnoPetPayload): Promise<TurnoPetCreado> {
   const connection = await pool.getConnection();
@@ -243,4 +265,89 @@ export function cancelarTurnoPet(localId: number, turnoId: number) {
 
 export function completarTurnoPet(localId: number, turnoId: number) {
   return cambiarEstadoTurnoPet(localId, turnoId, "completado");
+}
+
+export async function listarTurnosPetAdmin(
+  localId: number,
+  consulta: ConsultaListadoTurnosPet,
+): Promise<TurnoPetAdminListado[]> {
+  const rangeMode = consulta.fecha === undefined;
+  const datePredicate = rangeMode ? "t.fecha BETWEEN ? AND ?" : "t.fecha = ?";
+  const dateValues = rangeMode
+    ? [consulta.desde, consulta.hasta]
+    : [consulta.fecha];
+  const [turnos] = await pool.query<TurnoPetListadoRow[]>(
+    `SELECT t.id,
+            DATE_FORMAT(t.fecha, '%Y-%m-%d') AS fecha,
+            TIME_FORMAT(t.hora, '%H:%i') AS hora,
+            TIME_FORMAT(t.hora_fin, '%H:%i') AS hora_fin,
+            t.estado,
+            t.mascota_id,
+            m.nombre AS mascota_nombre,
+            t.alta_exigencia_snapshot,
+            t.cliente_id,
+            t.cliente_nombre,
+            t.cliente_telefono,
+            t.servicio_id,
+            t.servicio_nombre_snapshot,
+            t.duracion_servicio_snapshot
+     FROM turnos t
+     INNER JOIN mascotas m
+       ON m.id = t.mascota_id AND m.local_id = t.local_id
+     WHERE t.local_id = ?
+       AND t.mascota_id IS NOT NULL
+       AND ${datePredicate}
+     ORDER BY ${rangeMode ? "t.fecha ASC, " : ""}t.hora ASC, t.id ASC`,
+    [localId, ...dateValues],
+  );
+  if (!turnos.length) return [];
+
+  const turnoIds = turnos.map(turno => turno.id);
+  const placeholders = turnoIds.map(() => "?").join(", ");
+  const [extras] = await pool.query<TurnoExtraListadoRow[]>(
+    `SELECT te.turno_id, te.extra_id, te.nombre_snapshot, te.duracion_minutos
+     FROM turno_extras te
+     INNER JOIN turnos t ON t.id = te.turno_id
+     WHERE t.local_id = ?
+       AND t.mascota_id IS NOT NULL
+       AND t.id IN (${placeholders})
+     ORDER BY te.turno_id ASC, te.id ASC`,
+    [localId, ...turnoIds],
+  );
+  const extrasPorTurno = new Map<number, TurnoExtraListadoRow[]>();
+  for (const extra of extras) {
+    const turnoExtras = extrasPorTurno.get(extra.turno_id) ?? [];
+    turnoExtras.push(extra);
+    extrasPorTurno.set(extra.turno_id, turnoExtras);
+  }
+
+  return turnos.map(turno => ({
+    id: turno.id,
+    fecha: turno.fecha,
+    hora: turno.hora,
+    horaFin: turno.hora_fin,
+    estado: turno.estado,
+    mascota: {
+      id: turno.mascota_id,
+      nombre: turno.mascota_nombre,
+      altaExigenciaSnapshot: turno.alta_exigencia_snapshot === null
+        ? null
+        : turno.alta_exigencia_snapshot === 1,
+    },
+    responsable: {
+      id: turno.cliente_id,
+      nombre: turno.cliente_nombre,
+      telefono: turno.cliente_telefono,
+    },
+    servicio: {
+      id: turno.servicio_id,
+      nombre: turno.servicio_nombre_snapshot,
+      duracionMinutos: turno.duracion_servicio_snapshot,
+    },
+    extras: (extrasPorTurno.get(turno.id) ?? []).map(extra => ({
+      id: extra.extra_id,
+      nombre: extra.nombre_snapshot,
+      duracionMinutos: extra.duracion_minutos,
+    })),
+  }));
 }
