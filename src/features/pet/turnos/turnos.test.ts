@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { request, type Server } from "node:http";
-import { after, before, beforeEach, test } from "node:test";
+import { after, before, beforeEach, test, type TestContext } from "node:test";
 import express from "express";
 import jwt from "jsonwebtoken";
 import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
@@ -118,6 +118,7 @@ beforeEach(async t => {
   await pool.query("DELETE FROM mascota_clientes WHERE local_id = ?", [localId]);
   await pool.query("DELETE FROM mascota_servicios WHERE local_id = ?", [localId]);
   await pool.query("DELETE FROM mascota_extras WHERE local_id = ?", [localId]);
+  await pool.query("DELETE FROM mascotas WHERE local_id = ? AND id <> ? AND nombre = 'PET08B.2 pet'", [localId, mascotaId]);
   await pool.query("UPDATE mascotas SET activo = 1, alta_exigencia = 0 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
   await pool.query("UPDATE servicios SET activo = 1 WHERE id = ? AND local_id = ?", [servicioId, localId]);
   await pool.query("UPDATE extras SET activo = 1 WHERE local_id = ?", [localId]);
@@ -134,7 +135,7 @@ after(async () => {
   catch (error) { errors.push(error); }
   try {
     for (const id of locales) {
-      await pool.query("DELETE FROM turnos WHERE local_id = ? AND cliente_nombre IN ('Fixture PET08B', 'Responsable PET08B')", [id]);
+      await pool.query("DELETE FROM turnos WHERE local_id = ? AND mascota_id IS NOT NULL", [id]);
       await pool.query("DELETE FROM mascota_clientes WHERE local_id = ?", [id]);
       await pool.query("DELETE FROM mascota_servicios WHERE local_id = ?", [id]);
       await pool.query("DELETE FROM mascota_extras WHERE local_id = ?", [id]);
@@ -307,5 +308,198 @@ test("un error al insertar turno_extras revierte el turno y no deja detalles", a
   assert.equal(await totalTurnos(), 0);
   const [rows] = await pool.query<(RowDataPacket & { total: number })[]>(
     "SELECT COUNT(*) AS total FROM turno_extras WHERE nombre_snapshot = 'Extra PET08B one'");
+  assert.equal(rows[0].total, 0);
+});
+
+function barrier<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function turnosDelDia(target = localId): Promise<number> {
+  const [rows] = await pool.query<(RowDataPacket & { total: number })[]>(
+    "SELECT COUNT(*) AS total FROM turnos WHERE local_id = ? AND fecha = ? AND mascota_id IS NOT NULL", [target, fecha],
+  );
+  return rows[0].total;
+}
+
+async function esperarEsperaReal(threadId: number): Promise<void> {
+  // Wait for MySQL to report that B is blocked on InnoDB, not for a guessed delay.
+  const deadline = Date.now() + 15000; // watchdog only; never used as synchronization.
+  while (Date.now() < deadline) {
+    const [rows] = await pool.query<(RowDataPacket & { total: number })[]>(
+      `SELECT COUNT(*) AS total FROM performance_schema.data_lock_waits w
+       JOIN performance_schema.threads t ON t.THREAD_ID = w.REQUESTING_THREAD_ID
+       WHERE t.PROCESSLIST_ID = ?`, [threadId],
+    );
+    if (rows[0].total > 0) return;
+    await new Promise<void>(done => setImmediate(done));
+  }
+  throw new Error("La segunda transacción no llegó a esperar el lock InnoDB del local");
+}
+
+type PostResult = Awaited<ReturnType<typeof post>>;
+
+async function reservarConLockRetenido(
+  t: TestContext,
+  firstPayload: Record<string, unknown>,
+  secondPayload: Record<string, unknown>,
+  options: { secondLocal?: number; failFirstExtra?: boolean } = {},
+): Promise<[PostResult, PostResult]> {
+  const firstLocked = barrier<void>();
+  const releaseFirst = barrier<void>();
+  const secondAttempt = barrier<number>();
+  let firstConnectionSeen = false;
+  let firstConnection: object | null = null;
+  let bLockAcquired = false;
+  const originalGetConnection = pool.getConnection.bind(pool);
+  t.mock.method(pool, "getConnection", async () => {
+    const conn = await originalGetConnection();
+    const originalQuery = conn.query.bind(conn);
+    t.mock.method(conn, "query", ((...args: Parameters<typeof conn.query>) => {
+      const statement: unknown = args[0];
+      if (typeof statement === "string" && statement.includes("SELECT id, business_type FROM locales WHERE id = ? FOR UPDATE")) {
+        if (!firstConnectionSeen) {
+          firstConnectionSeen = true;
+          firstConnection = conn;
+          const lock = originalQuery(...args);
+          return lock.then(async result => {
+            firstLocked.resolve();
+            await releaseFirst.promise;
+            return result;
+          });
+        }
+        const lock = originalQuery(...args);
+        secondAttempt.resolve(conn.threadId);
+        return lock.then(result => {
+          bLockAcquired = true;
+          return result;
+        });
+      }
+      if (options.failFirstExtra && conn === firstConnection && typeof statement === "string"
+        && statement.includes("INSERT INTO turno_extras")) {
+        throw new Error("Fixture PET-08B.2: falla INSERT de extra tras tomar lock");
+      }
+      return originalQuery(...args);
+    }) as typeof conn.query);
+    return conn;
+  });
+
+  const first = post(firstPayload);
+  await firstLocked.promise;
+  const second = post(secondPayload, options.secondLocal ?? localId);
+  try {
+    const secondThread = await secondAttempt.promise;
+    if (options.secondLocal === undefined || options.secondLocal === localId) {
+      await esperarEsperaReal(secondThread);
+      assert.equal(bLockAcquired, false, "B no puede obtener el lock antes del COMMIT/ROLLBACK de A");
+      assert.equal(await turnosDelDia(), 0, "A conserva el lock aunque la agenda aún esté vacía");
+    } else {
+      // B must finish on another local while A still holds its lock. Watchdog is not an ordering mechanism.
+      let timer: ReturnType<typeof setTimeout>;
+      const watchdog = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Reserva de otro local quedó bloqueada")), 15000);
+      });
+      try {
+        await Promise.race([second, watchdog]);
+      } finally {
+        clearTimeout(timer!);
+      }
+      assert.equal(bLockAcquired, true);
+      assert.equal(await turnosDelDia(), 0);
+    }
+  } finally {
+    releaseFirst.resolve();
+  }
+  return Promise.all([first, second]);
+}
+
+async function segundaMascota(altaExigencia = false): Promise<number> {
+  const secondPet = await crear("mascotas", "INSERT INTO mascotas (local_id, nombre, alta_exigencia) VALUES (?, 'PET08B.2 pet', ?)", [localId, Number(altaExigencia)]);
+  await pool.query("INSERT INTO mascota_clientes (local_id, mascota_id, cliente_id) VALUES (?, ?, ?)", [localId, secondPet, clienteId]);
+  await pool.query("INSERT INTO mascota_servicios (local_id, mascota_id, servicio_id, duracion_minutos) VALUES (?, ?, ?, 60)",
+    [localId, secondPet, servicioId]);
+  return secondPet;
+}
+
+test("PET-08B.2 agenda vacía: mismo slot espera lock, 201/409 y solo un turno", { timeout: 30000 }, async t => {
+  await pool.query("UPDATE mascota_servicios SET duracion_minutos = 90 WHERE local_id = ? AND mascota_id = ?", [localId, mascotaId]);
+  assert.equal(await turnosDelDia(), 0);
+  const [a, b] = await reservarConLockRetenido(t, body({ hora: "10:00" }), body({ hora: "10:00" }));
+  assert.equal(a.status, 201);
+  assert.deepEqual([b.status, b.data.code], [409, "PET_SLOT_UNAVAILABLE"]);
+  assert.equal(await turnosDelDia(), 1);
+});
+
+test("PET-08B.2 inicios distintos solapados: el UNIQUE de hora no basta", { timeout: 30000 }, async t => {
+  const secondPet = await segundaMascota();
+  await pool.query("UPDATE mascota_servicios SET duracion_minutos = 90 WHERE local_id = ? AND mascota_id = ?", [localId, mascotaId]);
+  assert.equal(await turnosDelDia(), 0);
+  const [a, b] = await reservarConLockRetenido(t, body({ hora: "10:00" }), body({ hora: "11:00", mascotaId: secondPet }));
+  assert.deepEqual([a.status, a.data.horaFin], [201, "11:30"]);
+  assert.deepEqual([b.status, b.data.code], [409, "PET_SLOT_UNAVAILABLE"]);
+  assert.equal(await turnosDelDia(), 1);
+});
+
+test("PET-08B.2 intervalos adyacentes: ambos persisten tras revalidar", { timeout: 30000 }, async t => {
+  assert.equal(await turnosDelDia(), 0);
+  const [a, b] = await reservarConLockRetenido(t, body({ hora: "10:00" }), body({ hora: "11:00" }));
+  assert.equal(a.status, 201);
+  assert.equal(b.status, 201);
+  assert.equal(await turnosDelDia(), 2);
+});
+
+test("PET-08B.2 distintos locales: B confirma mientras A aún mantiene el lock", { timeout: 30000 }, async t => {
+  await pool.query("INSERT INTO mascota_clientes (local_id, mascota_id, cliente_id) VALUES (?, ?, ?)", [otroLocal, mascotaAjenaId, clienteAjenoId]);
+  await pool.query("INSERT INTO mascota_servicios (local_id, mascota_id, servicio_id, duracion_minutos) VALUES (?, ?, ?, 60)",
+    [otroLocal, mascotaAjenaId, servicioAjenoId]);
+  await pool.query("INSERT INTO horarios_local (local_id, dia_semana, hora_inicio, hora_fin) VALUES (?, ?, '09:00', '13:00')", [otroLocal, dia]);
+  assert.equal(await turnosDelDia(), 0);
+  assert.equal(await turnosDelDia(otroLocal), 0);
+  const [a, b] = await reservarConLockRetenido(t, body({ hora: "10:00" }),
+    body({ hora: "10:00", mascotaId: mascotaAjenaId, clienteId: clienteAjenoId, servicioId: servicioAjenoId }),
+    { secondLocal: otroLocal });
+  assert.equal(a.status, 201);
+  assert.equal(b.status, 201);
+  assert.equal(await turnosDelDia(), 1);
+  assert.equal(await turnosDelDia(otroLocal), 1);
+});
+
+test("PET-08B.2 MAX_PER_DAY=1 se revalida después del lock aunque los slots no se solapen", { timeout: 30000 }, async t => {
+  const secondPet = await segundaMascota(true);
+  await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  await settings("MAX_PER_DAY", 1);
+  assert.equal(await turnosDelDia(), 0);
+  const [a, b] = await reservarConLockRetenido(t, body({ hora: "10:00" }), body({ hora: "12:00", mascotaId: secondPet }));
+  assert.equal(a.status, 201);
+  assert.deepEqual([b.status, b.data.code], [409, "PET_SLOT_UNAVAILABLE"]);
+  const [rows] = await pool.query<(RowDataPacket & { total: number })[]>(
+    "SELECT COUNT(*) AS total FROM turnos WHERE local_id = ? AND fecha = ? AND mascota_id IS NOT NULL AND alta_exigencia_snapshot = 1", [localId, fecha]);
+  assert.equal(rows[0].total, 1);
+});
+
+test("PET-08B.2 MIN_GAP rechaza reservas high-demand físicamente no solapadas", { timeout: 30000 }, async t => {
+  const secondPet = await segundaMascota(true);
+  await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  await settings("MIN_GAP", 60);
+  assert.equal(await turnosDelDia(), 0);
+  const [a, b] = await reservarConLockRetenido(t, body({ hora: "10:00" }), body({ hora: "11:30", mascotaId: secondPet }));
+  assert.equal(a.status, 201);
+  assert.deepEqual([b.status, b.data.code], [409, "PET_SLOT_UNAVAILABLE"]);
+  assert.equal(await turnosDelDia(), 1);
+});
+
+test("PET-08B.2 rollback tras lock libera B: no quedan turno ni extra parciales", { timeout: 30000 }, async t => {
+  assert.equal(await turnosDelDia(), 0);
+  const [a, b] = await reservarConLockRetenido(t, body({ hora: "10:00", extraIds: [extraId] }), body({ hora: "10:00" }),
+    { failFirstExtra: true });
+  assert.equal(a.status, 500);
+  assert.equal(b.status, 201);
+  assert.equal(await turnosDelDia(), 1);
+  const [rows] = await pool.query<(RowDataPacket & { total: number })[]>(
+    `SELECT COUNT(*) AS total FROM turno_extras te
+     JOIN turnos t ON t.id = te.turno_id
+     WHERE t.local_id = ? AND t.fecha = ? AND t.mascota_id IS NOT NULL`, [localId, fecha]);
   assert.equal(rows[0].total, 0);
 });
