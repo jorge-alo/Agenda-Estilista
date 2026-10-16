@@ -366,6 +366,24 @@ async function turnosDelDia(target = localId): Promise<number> {
   return rows[0].total;
 }
 
+async function agregarHorarioTarde(inicio = "14:00", fin = "18:00"): Promise<void> {
+  await pool.query("INSERT INTO horarios_local (local_id, dia_semana, hora_inicio, hora_fin) VALUES (?, ?, ?, ?)",
+    [localId, dia, inicio, fin]);
+}
+
+async function leerTurnoPet(id: number) {
+  const [rows] = await pool.query<(RowDataPacket & {
+    fecha: string; hora: string; hora_fin: string; estado: string; alta_exigencia_snapshot: number;
+    cliente_nombre: string; cliente_telefono: string; servicio_nombre_snapshot: string;
+    duracion_servicio_snapshot: number;
+  })[]>(
+    `SELECT DATE_FORMAT(fecha,'%Y-%m-%d') AS fecha, hora, hora_fin, estado, alta_exigencia_snapshot,
+            cliente_nombre, cliente_telefono, servicio_nombre_snapshot, duracion_servicio_snapshot
+     FROM turnos WHERE id = ? AND local_id = ? AND mascota_id IS NOT NULL`, [id, localId]);
+  assert.equal(rows.length, 1);
+  return rows[0];
+}
+
 async function esperarEsperaReal(threadId: number): Promise<void> {
   // Wait for MySQL to report that B is blocked on InnoDB, not for a guessed delay.
   const deadline = Date.now() + 15000; // watchdog only; never used as synchronization.
@@ -453,6 +471,78 @@ async function reservarConLockRetenido(
     }
   } finally {
     releaseFirst.resolve();
+  }
+  return Promise.all([first, second]);
+}
+
+type ConcurrentRequestResult = Awaited<ReturnType<typeof patchTurno>>;
+
+async function requestsTurnoConLockRetenido(
+  t: TestContext,
+  startFirst: () => Promise<ConcurrentRequestResult>,
+  startSecond: () => Promise<ConcurrentRequestResult>,
+  options: { failFirstUpdate?: boolean } = {},
+): Promise<[ConcurrentRequestResult, ConcurrentRequestResult]> {
+  const firstLocked = barrier<void>();
+  const releaseFirstLockQuery = barrier<void>();
+  const secondAttempt = barrier<number>();
+  const firstAtUpdate = barrier<void>();
+  const releaseFirstUpdateFailure = barrier<void>();
+  let firstConnection: object | null = null;
+  let firstConnectionSeen = false;
+  let secondLockAcquired = false;
+
+  const originalGetConnection = pool.getConnection.bind(pool);
+  t.mock.method(pool, "getConnection", async () => {
+    const connection = await originalGetConnection();
+    const originalQuery = connection.query.bind(connection);
+    t.mock.method(connection, "query", ((...args: Parameters<typeof connection.query>) => {
+      const statement: unknown = args[0];
+      if (typeof statement === "string" && statement.includes("SELECT id, business_type FROM locales WHERE id = ? FOR UPDATE")) {
+        if (!firstConnectionSeen) {
+          firstConnectionSeen = true;
+          firstConnection = connection;
+          return originalQuery(...args).then(async result => {
+            firstLocked.resolve();
+            await releaseFirstLockQuery.promise;
+            return result;
+          });
+        }
+        const lock = originalQuery(...args);
+        secondAttempt.resolve(connection.threadId);
+        return lock.then(result => {
+          secondLockAcquired = true;
+          return result;
+        });
+      }
+      if (options.failFirstUpdate && connection === firstConnection && typeof statement === "string"
+        && /^\s*UPDATE turnos\s+SET fecha/s.test(statement)) {
+        firstAtUpdate.resolve();
+        return releaseFirstUpdateFailure.promise.then(() => {
+          throw new Error("PET08B.3.2 fixture: fallo UPDATE de reprogramación");
+        });
+      }
+      return originalQuery(...args);
+    }) as typeof connection.query);
+    return connection;
+  });
+
+  const first = startFirst();
+  await firstLocked.promise;
+  const second = startSecond();
+  try {
+    const waitingThread = await secondAttempt.promise;
+    await esperarEsperaReal(waitingThread);
+    assert.equal(secondLockAcquired, false, "la segunda operación sigue esperando el lock local");
+    releaseFirstLockQuery.resolve();
+    if (options.failFirstUpdate) {
+      await firstAtUpdate.promise;
+      assert.equal(secondLockAcquired, false, "B debe seguir esperando mientras A prepara el rollback");
+      releaseFirstUpdateFailure.resolve();
+    }
+  } finally {
+    releaseFirstLockQuery.resolve();
+    releaseFirstUpdateFailure.resolve();
   }
   return Promise.all([first, second]);
 }
@@ -753,4 +843,169 @@ test("error inducido en UPDATE hace rollback y conserva turno/extras", async t =
   const [extras] = await pool.query<(RowDataPacket & { extra_id: number; nombre_snapshot: string; duracion_minutos: number })[]>(
     "SELECT extra_id,nombre_snapshot,duracion_minutos FROM turno_extras WHERE turno_id = ?", [id]);
   assert.deepEqual(extras, [{ extra_id: extraId, nombre_snapshot: "Extra PET08B one", duracion_minutos: 15 }]);
+});
+
+test("PET-08B.3.2 dos PATCH del mismo turno: espera InnoDB y aplica last valid write wins", { timeout: 30000 }, async t => {
+  await agregarHorarioTarde();
+  const created = await post(body({ hora: "10:00", extraIds: [extraId] }));
+  assert.equal(created.status, 201);
+  const turnoId = Number(created.data.id);
+  const [extrasBefore] = await pool.query<RowDataPacket[]>(
+    "SELECT extra_id,nombre_snapshot,duracion_minutos FROM turno_extras WHERE turno_id = ? ORDER BY id", [turnoId]);
+
+  const [a, b] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchTurno(turnoId, { fecha, hora: "14:00" }),
+    () => patchTurno(turnoId, { fecha, hora: "16:00" }),
+  );
+  assert.deepEqual([a.status, b.status], [200, 200]);
+  assert.equal(await turnosDelDia(), 1);
+  const final = await leerTurnoPet(turnoId);
+  assert.deepEqual([final.fecha, final.hora, final.hora_fin], [fecha, "16:00:00", "17:15:00"]);
+  const [extrasAfter] = await pool.query<RowDataPacket[]>(
+    "SELECT extra_id,nombre_snapshot,duracion_minutos FROM turno_extras WHERE turno_id = ? ORDER BY id", [turnoId]);
+  assert.deepEqual(extrasAfter.map(row => ({ extra_id: row.extra_id, nombre_snapshot: row.nombre_snapshot, duracion_minutos: row.duracion_minutos })),
+    extrasBefore.map(row => ({ extra_id: row.extra_id, nombre_snapshot: row.nombre_snapshot, duracion_minutos: row.duracion_minutos })));
+});
+
+test("PET-08B.3.2 segunda reprogramación inválida no revierte el commit de A", { timeout: 30000 }, async t => {
+  await agregarHorarioTarde("13:00", "17:00");
+  const turnoId = await turnoExistente("10:00", "11:00", "activo", 0);
+  const otherPet = await segundaMascota();
+  await crearTurnoLocal(localId, otherPet, clienteId, servicioId, "13:00", "14:00");
+
+  const [a, b] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchTurno(turnoId, { fecha, hora: "14:00" }),
+    () => patchTurno(turnoId, { fecha, hora: "13:30" }),
+  );
+  assert.equal(a.status, 200);
+  assert.deepEqual([b.status, b.data.code], [409, "PET_SLOT_UNAVAILABLE"]);
+  assert.deepEqual([(await leerTurnoPet(turnoId)).hora, (await leerTurnoPet(turnoId)).hora_fin], ["14:00:00", "15:00:00"]);
+  assert.equal(await turnosDelDia(), 2);
+});
+
+test("PET-08B.3.2 reprogramar vs crear mismo destino: solo una operación lo ocupa", { timeout: 30000 }, async t => {
+  await agregarHorarioTarde();
+  const turnoId = await turnoExistente("10:00", "11:00", "activo", 0);
+  const [patchResult, postResult] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchTurno(turnoId, { fecha, hora: "14:00" }),
+    () => post(body({ hora: "14:00" })),
+  );
+  assert.deepEqual([patchResult.status, postResult.status], [200, 409]);
+  assert.equal(postResult.data.code, "PET_SLOT_UNAVAILABLE");
+  const [rows] = await pool.query<(RowDataPacket & { total: number })[]>(
+    "SELECT COUNT(*) AS total FROM turnos WHERE local_id = ? AND fecha = ? AND mascota_id IS NOT NULL AND hora = '14:00'", [localId, fecha]);
+  assert.equal(rows[0].total, 1);
+});
+
+test("PET-08B.3.2 reprogramar vs crear con inicio distinto pero overlap: solo uno gana", { timeout: 30000 }, async t => {
+  await agregarHorarioTarde();
+  const turnoId = await turnoExistente("10:00", "11:30", "activo", 0);
+  await pool.query("UPDATE turnos SET duracion_servicio_snapshot = 90 WHERE id = ? AND local_id = ?", [turnoId, localId]);
+  const [patchResult, postResult] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchTurno(turnoId, { fecha, hora: "14:00" }),
+    () => post(body({ hora: "15:00" })),
+  );
+  assert.equal(patchResult.status, 200);
+  assert.deepEqual([postResult.status, postResult.data.code], [409, "PET_SLOT_UNAVAILABLE"]);
+  assert.deepEqual([(await leerTurnoPet(turnoId)).hora, (await leerTurnoPet(turnoId)).hora_fin], ["14:00:00", "15:30:00"]);
+  assert.equal(await turnosDelDia(), 1);
+});
+
+test("PET-08B.3.2 reprogramar vs crear adyacentes acepta ambos tras revalidación", { timeout: 30000 }, async t => {
+  await agregarHorarioTarde();
+  const turnoId = await turnoExistente("10:00", "11:00", "activo", 0);
+  const [patchResult, postResult] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchTurno(turnoId, { fecha, hora: "14:00" }),
+    () => post(body({ hora: "15:00" })),
+  );
+  assert.equal(patchResult.status, 200);
+  assert.equal(postResult.status, 201);
+  const [rows] = await pool.query<(RowDataPacket & { total: number })[]>(
+    "SELECT COUNT(*) AS total FROM turnos WHERE local_id = ? AND fecha = ? AND mascota_id IS NOT NULL AND hora IN ('14:00','15:00')", [localId, fecha]);
+  assert.equal(rows[0].total, 2);
+});
+
+test("PET-08B.3.2 dos turnos distintos al mismo destino: una reprogramación queda intacta", { timeout: 30000 }, async t => {
+  await agregarHorarioTarde();
+  const secondPet = await segundaMascota();
+  const firstId = await turnoExistente("10:00", "11:00", "activo", 0);
+  const secondId = await crearTurnoLocal(localId, secondPet, clienteId, servicioId, "11:00", "12:00");
+  const [a, b] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchTurno(firstId, { fecha, hora: "14:00" }),
+    () => patchTurno(secondId, { fecha, hora: "14:00" }),
+  );
+  assert.equal(a.status, 200);
+  assert.deepEqual([b.status, b.data.code], [409, "PET_SLOT_UNAVAILABLE"]);
+  assert.deepEqual([(await leerTurnoPet(firstId)).hora, (await leerTurnoPet(secondId)).hora], ["14:00:00", "11:00:00"]);
+  assert.equal(await turnosDelDia(), 2);
+});
+
+test("PET-08B.3.2 MAX_PER_DAY se reevalúa serialmente si ambas mascotas se vuelven high-demand", { timeout: 30000 }, async t => {
+  await agregarHorarioTarde();
+  const secondPet = await segundaMascota(true);
+  await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  await settings("MAX_PER_DAY", 1);
+  const firstId = await turnoExistente("10:00", "11:00", "activo", 0);
+  const secondId = await crearTurnoLocal(localId, secondPet, clienteId, servicioId, "11:00", "12:00", "activo", 0);
+  const [a, b] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchTurno(firstId, { fecha, hora: "14:00" }),
+    () => patchTurno(secondId, { fecha, hora: "16:00" }),
+  );
+  assert.equal(a.status, 200);
+  assert.deepEqual([b.status, b.data.code], [409, "PET_SLOT_UNAVAILABLE"]);
+  const [rows] = await pool.query<(RowDataPacket & { high_count: number; second_hour: string; second_snapshot: number })[]>(
+    `SELECT SUM(alta_exigencia_snapshot = 1) AS high_count,
+            MAX(CASE WHEN id = ? THEN hora END) AS second_hour,
+            MAX(CASE WHEN id = ? THEN alta_exigencia_snapshot END) AS second_snapshot
+     FROM turnos WHERE local_id = ? AND fecha = ? AND mascota_id IS NOT NULL`,
+    [secondId, secondId, localId, fecha]);
+  assert.equal(Number(rows[0].high_count), 1);
+  assert.deepEqual([rows[0].second_hour, Number(rows[0].second_snapshot)], ["11:00:00", 0]);
+});
+
+test("PET-08B.3.2 MIN_GAP se reevalúa serialmente aunque los destinos no se solapen", { timeout: 30000 }, async t => {
+  await agregarHorarioTarde();
+  const secondPet = await segundaMascota(true);
+  await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  await settings("MIN_GAP", 60);
+  const firstId = await turnoExistente("10:00", "11:00", "activo", 0);
+  const secondId = await crearTurnoLocal(localId, secondPet, clienteId, servicioId, "11:00", "12:00", "activo", 0);
+  const [a, b] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchTurno(firstId, { fecha, hora: "14:00" }),
+    () => patchTurno(secondId, { fecha, hora: "15:30" }),
+  );
+  assert.equal(a.status, 200);
+  assert.deepEqual([b.status, b.data.code], [409, "PET_SLOT_UNAVAILABLE"]);
+  assert.deepEqual([(await leerTurnoPet(firstId)).hora, (await leerTurnoPet(secondId)).hora], ["14:00:00", "11:00:00"]);
+});
+
+test("PET-08B.3.2 rollback de A libera lock y B reprograma; snapshots siguen intactos", { timeout: 30000 }, async t => {
+  await agregarHorarioTarde();
+  const created = await post(body({ hora: "10:00", extraIds: [extraId] }));
+  const turnoId = Number(created.data.id);
+  const [extrasBefore] = await pool.query<RowDataPacket[]>(
+    "SELECT extra_id,nombre_snapshot,duracion_minutos FROM turno_extras WHERE turno_id = ?", [turnoId]);
+  const [a, b] = await requestsTurnoConLockRetenido(
+    t,
+    () => patchTurno(turnoId, { fecha, hora: "14:00" }),
+    () => patchTurno(turnoId, { fecha, hora: "16:00" }),
+    { failFirstUpdate: true },
+  );
+  assert.equal(a.status, 500);
+  assert.equal(b.status, 200);
+  const final = await leerTurnoPet(turnoId);
+  assert.deepEqual([final.hora, final.hora_fin, final.estado, final.alta_exigencia_snapshot], ["16:00:00", "17:15:00", "activo", 0]);
+  const [extrasAfter] = await pool.query<RowDataPacket[]>(
+    "SELECT extra_id,nombre_snapshot,duracion_minutos FROM turno_extras WHERE turno_id = ?", [turnoId]);
+  assert.deepEqual(extrasAfter.map(row => ({ extra_id: row.extra_id, nombre_snapshot: row.nombre_snapshot, duracion_minutos: row.duracion_minutos })),
+    extrasBefore.map(row => ({ extra_id: row.extra_id, nombre_snapshot: row.nombre_snapshot, duracion_minutos: row.duracion_minutos })));
+  assert.equal(await turnosDelDia(), 1);
 });
