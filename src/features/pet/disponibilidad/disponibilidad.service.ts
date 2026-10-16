@@ -1,10 +1,11 @@
-import type { RowDataPacket } from "mysql2/promise";
+import type { Pool, PoolConnection, RowDataPacket } from "mysql2/promise";
 import { pool } from "../../../config/db";
 import { calcularDuracionTotal, calcularSlotsDisponibles, horaAMinutos, minutosAHora } from "./disponibilidad.engine";
 import type { AvailabilityBlock, AvailableInterval, HighDemandSettings, MinuteInterval } from "./disponibilidad.types";
 
 const INT_MAX = 2147483647;
 const TIME_ZONE = "America/Argentina/Buenos_Aires";
+type SqlReader = Pool | PoolConnection;
 
 export class DisponibilidadPetError extends Error {
   constructor(
@@ -37,6 +38,7 @@ interface MascotaRow extends RowDataPacket {
 
 interface ServicioRow extends RowDataPacket {
   id: number;
+  nombre: string;
   activo: number | null;
 }
 
@@ -46,8 +48,24 @@ interface DuracionRow extends RowDataPacket {
 
 interface ExtraRow extends RowDataPacket {
   id: number;
+  nombre: string;
   activo: number;
   duracion_minutos: number | null;
+}
+
+export interface ExtraAplicado {
+  id: number;
+  nombre: string;
+  duracionMinutos: number;
+}
+
+export interface ContextoDisponibilidadPet {
+  duracionMinutos: number;
+  duracionServicio: number;
+  servicioNombre: string;
+  altaExigencia: 0 | 1;
+  extras: ExtraAplicado[];
+  slots: AvailableInterval[];
 }
 
 interface SettingsRow extends RowDataPacket {
@@ -146,8 +164,8 @@ function traducirSettings(row: SettingsRow): HighDemandSettings {
   throw errorIntegridad("Regla almacenada desconocida en pet_settings");
 }
 
-async function obtenerHorarios(localId: number, diaSemana: number): Promise<MinuteInterval[]> {
-  const [rows] = await pool.query<HorarioRow[]>(
+async function obtenerHorarios(reader: SqlReader, localId: number, diaSemana: number): Promise<MinuteInterval[]> {
+  const [rows] = await reader.query<HorarioRow[]>(
     `SELECT hora_inicio, hora_fin
      FROM horarios_local
      WHERE local_id = ? AND dia_semana = ? AND activo = 1
@@ -157,8 +175,8 @@ async function obtenerHorarios(localId: number, diaSemana: number): Promise<Minu
   return rows.map((row, index) => intervaloDb(row.hora_inicio, row.hora_fin, `horarios_local[${index}]`));
 }
 
-async function obtenerBloqueos(localId: number, fecha: string): Promise<AvailabilityBlock[]> {
-  const [rows] = await pool.query<BloqueoRow[]>(
+async function obtenerBloqueos(reader: SqlReader, localId: number, fecha: string): Promise<AvailabilityBlock[]> {
+  const [rows] = await reader.query<BloqueoRow[]>(
     `SELECT es_dia_completo, hora_inicio, hora_fin
      FROM bloqueos_local
      WHERE local_id = ? AND fecha = ?
@@ -172,12 +190,12 @@ async function obtenerBloqueos(localId: number, fecha: string): Promise<Availabi
   });
 }
 
-async function obtenerTurnosPet(localId: number, fecha: string): Promise<{
+async function obtenerTurnosPet(reader: SqlReader, localId: number, fecha: string): Promise<{
   occupiedIntervals: MinuteInterval[];
   highDemandIntervals: MinuteInterval[];
   highDemandCount: number;
 }> {
-  const [rows] = await pool.query<TurnoPetRow[]>(
+  const [rows] = await reader.query<TurnoPetRow[]>(
     `SELECT hora, hora_fin, estado, alta_exigencia_snapshot
      FROM turnos
      WHERE local_id = ? AND fecha = ? AND mascota_id IS NOT NULL`,
@@ -214,11 +232,13 @@ function formatearSlots(slots: AvailableInterval[]): Array<{ horaInicio: string;
   }));
 }
 
-export async function obtenerDisponibilidad(
+export async function prepararDisponibilidad(
+  reader: SqlReader,
   localId: number,
   consulta: ConsultaDisponibilidadPet,
-): Promise<RespuestaDisponibilidadPet> {
-  const [mascotas] = await pool.query<MascotaRow[]>(
+  options: { lockSettings?: boolean } = {},
+): Promise<ContextoDisponibilidadPet> {
+  const [mascotas] = await reader.query<MascotaRow[]>(
     "SELECT id, activo, alta_exigencia FROM mascotas WHERE id = ? AND local_id = ?",
     [consulta.mascotaId, localId],
   );
@@ -227,25 +247,25 @@ export async function obtenerDisponibilidad(
   if (mascota.activo !== 1) throw new DisponibilidadPetError(409, "PET_MASCOTA_INACTIVA", "La mascota no está activa para nuevas reservas");
   if (mascota.alta_exigencia !== 0 && mascota.alta_exigencia !== 1) throw errorIntegridad("mascotas.alta_exigencia tiene un valor inválido");
 
-  const [servicios] = await pool.query<ServicioRow[]>(
-    "SELECT id, activo FROM servicios WHERE id = ? AND local_id = ?",
+  const [servicios] = await reader.query<ServicioRow[]>(
+    "SELECT id, nombre, activo FROM servicios WHERE id = ? AND local_id = ?",
     [consulta.servicioId, localId],
   );
   if (!servicios.length) throw new DisponibilidadPetError(404, "PET_SERVICIO_NOT_FOUND", "Servicio no encontrado");
   if (servicios[0].activo !== 1) throw new DisponibilidadPetError(409, "PET_SERVICIO_INACTIVO", "El servicio no está activo");
 
-  const [relacionesServicio] = await pool.query<DuracionRow[]>(
+  const [relacionesServicio] = await reader.query<DuracionRow[]>(
     `SELECT duracion_minutos FROM mascota_servicios
      WHERE local_id = ? AND mascota_id = ? AND servicio_id = ?`,
     [localId, consulta.mascotaId, consulta.servicioId],
   );
   if (!relacionesServicio.length) throw new DisponibilidadPetError(409, "PET_SERVICIO_NO_ASOCIADO", "El servicio no está habilitado para esta mascota");
 
-  let duracionesExtras: number[] = [];
+  let extrasAplicados: ExtraAplicado[] = [];
   if (consulta.extraIds.length) {
     const placeholders = consulta.extraIds.map(() => "?").join(", ");
-    const [extras] = await pool.query<ExtraRow[]>(
-      `SELECT e.id, e.activo, me.duracion_minutos
+    const [extras] = await reader.query<ExtraRow[]>(
+      `SELECT e.id, e.nombre, e.activo, me.duracion_minutos
        FROM extras e
        LEFT JOIN mascota_extras me
          ON me.extra_id = e.id AND me.mascota_id = ? AND me.local_id = e.local_id
@@ -259,16 +279,18 @@ export async function obtenerDisponibilidad(
       if (extra.activo !== 1) throw new DisponibilidadPetError(409, "PET_EXTRA_INACTIVO", "Uno o más extras no están activos");
       if (extra.duracion_minutos === null) throw new DisponibilidadPetError(409, "PET_EXTRA_NO_ASOCIADO", "Uno o más extras no están habilitados para esta mascota");
     }
-    // MySQL IN does not preserve request order; duration addition is commutative.
-    duracionesExtras = extras.map(extra => extra.duracion_minutos as number);
+    extrasAplicados = extras.map(extra => ({
+      id: extra.id, nombre: extra.nombre, duracionMinutos: extra.duracion_minutos as number,
+    }));
   }
 
-  const duracionMinutos = calcularDuracionTotal(relacionesServicio[0].duracion_minutos, duracionesExtras);
+  const duracionServicio = relacionesServicio[0].duracion_minutos;
+  const duracionMinutos = calcularDuracionTotal(duracionServicio, extrasAplicados.map(extra => extra.duracionMinutos));
   let settings: HighDemandSettings | null = null;
   if (mascota.alta_exigencia === 1) {
-    const [rows] = await pool.query<SettingsRow[]>(
+    const [rows] = await reader.query<SettingsRow[]>(
       `SELECT high_demand_rule, high_demand_gap_minutes, high_demand_max_per_day
-       FROM pet_settings WHERE local_id = ?`,
+       FROM pet_settings WHERE local_id = ?${options.lockSettings ? " FOR SHARE" : ""}`,
       [localId],
     );
     if (!rows.length) {
@@ -278,23 +300,26 @@ export async function obtenerDisponibilidad(
   }
 
   const temporal = contextoTemporalArgentina();
+  const base = {
+    duracionMinutos, duracionServicio, servicioNombre: servicios[0].nombre,
+    altaExigencia: mascota.alta_exigencia as 0 | 1, extras: extrasAplicados,
+  };
   if (consulta.fecha < temporal.fecha) {
-    return { fecha: consulta.fecha, duracionMinutos, slots: [] };
+    return { ...base, slots: [] };
   }
 
   const [year, month, day] = consulta.fecha.split("-").map(Number);
   const diaSemana = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
-  const [schedules, blocks, turns] = await Promise.all([
-    obtenerHorarios(localId, diaSemana),
-    obtenerBloqueos(localId, consulta.fecha),
-    obtenerTurnosPet(localId, consulta.fecha),
-  ]);
+  // Sequential reads keep all POST decisions on the same locked connection.
+  const schedules = await obtenerHorarios(reader, localId, diaSemana);
+  const blocks = await obtenerBloqueos(reader, localId, consulta.fecha);
+  const turns = await obtenerTurnosPet(reader, localId, consulta.fecha);
 
   const minimumStartMinutes = consulta.fecha === temporal.fecha
     ? temporal.minimumStartMinutes
     : null;
   if (minimumStartMinutes !== null && minimumStartMinutes >= 1440) {
-    return { fecha: consulta.fecha, duracionMinutos, slots: [] };
+    return { ...base, slots: [] };
   }
 
   const highDemand = mascota.alta_exigencia === 1
@@ -312,6 +337,14 @@ export async function obtenerDisponibilidad(
     highDemand,
   });
 
-  // This GET is a snapshot only. PET-08B must revalidate under the local lock when creating a turn.
-  return { fecha: consulta.fecha, duracionMinutos, slots: formatearSlots(slots) };
+  return { ...base, slots };
+}
+
+export async function obtenerDisponibilidad(
+  localId: number,
+  consulta: ConsultaDisponibilidadPet,
+): Promise<RespuestaDisponibilidadPet> {
+  // GET is only a snapshot; POST reuses the preparation with its locked connection.
+  const result = await prepararDisponibilidad(pool, localId, consulta);
+  return { fecha: consulta.fecha, duracionMinutos: result.duracionMinutos, slots: formatearSlots(result.slots) };
 }

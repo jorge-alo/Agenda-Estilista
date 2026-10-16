@@ -2,6 +2,7 @@ import type { Response } from "express";
 import type { AuthRequest } from "../../../middlewares/auth.middleware";
 import { DisponibilidadPetError, obtenerDisponibilidad } from "./disponibilidad.service";
 import type { ConsultaDisponibilidadPet } from "./disponibilidad.service";
+import { fechaPetValida } from "./disponibilidad.types";
 
 const INT_MAX = 2147483647;
 const QUERY_KEYS = new Set(["mascotaId", "servicioId", "fecha", "extraIds"]);
@@ -24,12 +25,7 @@ function scalar(query: Record<string, unknown>, nombre: "mascotaId" | "servicioI
 }
 
 function fechaReal(value: string): string {
-  if (!/^[1-9]\d{3}-\d{2}-\d{2}$/.test(value)) throw errorQuery("fecha debe usar YYYY-MM-DD");
-  const [year, month, day] = value.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
-    throw errorQuery("fecha no existe en el calendario");
-  }
+  if (!fechaPetValida(value)) throw errorQuery("fecha inválida: usar YYYY-MM-DD real");
   return value;
 }
 

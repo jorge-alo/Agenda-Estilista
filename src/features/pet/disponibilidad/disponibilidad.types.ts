@@ -37,3 +37,11 @@ export interface CalculateAvailabilityInput {
 }
 
 export interface AvailableInterval extends MinuteInterval {}
+
+/** Calendar date in the PET API format, independent of the host timezone. */
+export function fechaPetValida(value: unknown): value is string {
+  if (typeof value !== "string" || !/^[1-9]\d{3}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}

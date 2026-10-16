@@ -8,6 +8,7 @@ import horariosRouter from "./horarios/horarios.routes";
 import bloqueosRouter from "./bloqueos/bloqueos.routes";
 import settingsRouter from "./settings/settings.routes";
 import disponibilidadRouter from "./disponibilidad/disponibilidad.routes";
+import turnosRouter from "./turnos/turnos.routes";
 
 const petRouter = Router();
 
@@ -21,5 +22,6 @@ petRouter.use(horariosRouter);
 petRouter.use(bloqueosRouter);
 petRouter.use(settingsRouter);
 petRouter.use(disponibilidadRouter);
+petRouter.use(turnosRouter);
 
 export default petRouter;
