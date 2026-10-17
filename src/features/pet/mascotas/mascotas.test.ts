@@ -40,7 +40,7 @@ async function httpRequest(
   method: string,
   path: string,
   token?: string,
-  body?: Record<string, unknown>
+  body?: unknown
 ): Promise<{ statusCode: number; body: string }> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -53,7 +53,7 @@ async function httpRequest(
       res.on("error", reject);
     });
     req.on("error", reject);
-    if (body) req.end(JSON.stringify(body));
+    if (body !== undefined) req.end(JSON.stringify(body));
     else req.end();
   });
 }
@@ -570,5 +570,101 @@ describe("PET-02B M:N Responsables", () => {
     const detalle = JSON.parse(result.body);
     assert.ok(Array.isArray(detalle.responsables));
     assert.ok(detalle.responsables.some((r: any) => r.id === clienteId));
+  });
+});
+
+describe("PET-11B.1 habilitación administrativa de reserva online", () => {
+  const path = (id: number | string) => `/api/pet/admin/mascotas/${id}/reserva-online`;
+
+  test("solo admin de local PET autenticado puede usar la operación", async () => {
+    const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: "Seguridad online" });
+    const id = JSON.parse(create.body).id as number;
+    assert.equal((await httpRequest("PATCH", path(id), undefined, { reservaOnlineHabilitada: true })).statusCode, 401);
+    assert.equal((await httpRequest("PATCH", path(id), petAdminToken({ rol: "empleado" }), { reservaOnlineHabilitada: true })).statusCode, 403);
+    assert.equal((await httpRequest("PATCH", path(id), beautyAdminToken(), { reservaOnlineHabilitada: true })).statusCode, 403);
+    assert.equal((await httpRequest("PATCH", path("1abc"), petAdminToken(), { reservaOnlineHabilitada: true })).statusCode, 400);
+    assert.equal((await httpRequest("PATCH", path(2147483648), petAdminToken(), { reservaOnlineHabilitada: true })).statusCode, 400);
+  });
+
+  test("false → true → false actualiza solo el flag y persiste; no requiere servicios", async () => {
+    const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: "Toggle reserva", altaExigencia: true });
+    const mascota = JSON.parse(create.body);
+    assert.equal(mascota.reserva_online_habilitada, 0);
+
+    const before = await httpRequest("PATCH", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken(), { altaExigencia: true });
+    assert.equal(before.statusCode, 200);
+
+    const enable = await httpRequest("PATCH", path(mascota.id), petAdminToken(), { reservaOnlineHabilitada: true });
+    assert.equal(enable.statusCode, 200);
+    assert.deepEqual(JSON.parse(enable.body), { id: mascota.id, reservaOnlineHabilitada: true });
+
+    const [details]: any = await pool.query(
+      "SELECT nombre, activo, alta_exigencia, reserva_online_habilitada FROM mascotas WHERE id = ? AND local_id = ?",
+      [mascota.id, petLocalId]
+    );
+    assert.deepEqual(details[0], { nombre: "Toggle reserva", activo: 1, alta_exigencia: 1, reserva_online_habilitada: 1 });
+
+    for (const table of ["mascota_servicios", "mascota_extras"] as const) {
+      const [rows]: any = await pool.query(`SELECT COUNT(*) AS total FROM ${table} WHERE mascota_id = ? AND local_id = ?`, [mascota.id, petLocalId]);
+      assert.equal(rows[0].total, 0);
+    }
+
+    const disable = await httpRequest("PATCH", path(mascota.id), petAdminToken(), { reservaOnlineHabilitada: false });
+    assert.equal(disable.statusCode, 200);
+    assert.deepEqual(JSON.parse(disable.body), { id: mascota.id, reservaOnlineHabilitada: false });
+    const detail = JSON.parse((await httpRequest("GET", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken())).body);
+    assert.equal(detail.reserva_online_habilitada, 0);
+    assert.equal(detail.alta_exigencia, 1);
+  });
+
+  for (const [label, value] of [
+    ["1", 1], ["0", 0], ["string true", "true"], ["string false", "false"],
+    ["null", null], ["array", []], ["object", {}], ["campo extra", { reservaOnlineHabilitada: true, activo: true }],
+    ["campo faltante", {}],
+  ] as const) {
+    test(`rechaza body inválido (${label}) sin modificar la mascota`, async () => {
+      const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: `Invalido ${label}` });
+      const mascota = JSON.parse(create.body);
+      const result = await httpRequest("PATCH", path(mascota.id), petAdminToken(),
+        label === "campo extra" ? value : { reservaOnlineHabilitada: value });
+      assert.equal(result.statusCode, 400, result.body);
+      const detail = JSON.parse((await httpRequest("GET", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken())).body);
+      assert.equal(detail.reserva_online_habilitada, 0);
+      assert.equal(detail.activo, 1);
+    });
+  }
+
+  test("no habilita mascota inactiva pero permite deshabilitarla", async () => {
+    const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: "Inactiva online" });
+    const mascota = JSON.parse(create.body);
+    await httpRequest("PATCH", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken(), { activo: false });
+
+    const enable = await httpRequest("PATCH", path(mascota.id), petAdminToken(), { reservaOnlineHabilitada: true });
+    assert.equal(enable.statusCode, 409);
+    assert.deepEqual(JSON.parse(enable.body), { error: "PET_MASCOTA_INACTIVE" });
+
+    const disable = await httpRequest("PATCH", path(mascota.id), petAdminToken(), { reservaOnlineHabilitada: false });
+    assert.equal(disable.statusCode, 200);
+    assert.deepEqual(JSON.parse(disable.body), { id: mascota.id, reservaOnlineHabilitada: false });
+    const detail = JSON.parse((await httpRequest("GET", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken())).body);
+    assert.equal(detail.activo, 0);
+    assert.equal(detail.reserva_online_habilitada, 0);
+  });
+
+  test("mascota ajena o inexistente devuelve 404 sin alterar otro tenant", async () => {
+    const create = await httpRequest("POST", "/api/pet/admin/mascotas", otherPetAdminToken(), { nombre: "Ajena reserva" });
+    const id = JSON.parse(create.body).id as number;
+    assert.equal((await httpRequest("PATCH", path(id), petAdminToken(), { reservaOnlineHabilitada: true })).statusCode, 404);
+    assert.equal((await httpRequest("PATCH", path(2147483647), petAdminToken(), { reservaOnlineHabilitada: true })).statusCode, 404);
+    const detail = JSON.parse((await httpRequest("GET", `/api/pet/admin/mascotas/${id}`, otherPetAdminToken())).body);
+    assert.equal(detail.reserva_online_habilitada, 0);
+  });
+
+  test("el PATCH general conserva protegido reserva_online_habilitada", async () => {
+    const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: "PATCH general" });
+    const mascota = JSON.parse(create.body);
+    const result = await httpRequest("PATCH", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken(), { reservaOnlineHabilitada: true });
+    assert.equal(result.statusCode, 200);
+    assert.equal(JSON.parse(result.body).reserva_online_habilitada, 0);
   });
 });

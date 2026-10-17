@@ -2,9 +2,11 @@ import { pool } from "../../../config/db";
 import {
   CrearMascotaPayload,
   EditarMascotaPayload,
+  EditarReservaOnlinePayload,
   AsociarResponsablePayload,
   CrearResponsablePayload,
 } from "./mascotas.types";
+import type { ResultSetHeader, RowDataPacket } from "mysql2";
 
 export interface Mascota {
   id: number;
@@ -185,6 +187,50 @@ export const editarMascota = async (localId: number, mascotaId: number, payload:
   );
 
   return rows[0];
+};
+
+export class MascotaReservaOnlineError extends Error {
+  constructor(public readonly status: number, public readonly code: string) {
+    super(code);
+  }
+}
+
+interface MascotaReservaOnlineRow extends RowDataPacket {
+  id: number;
+  activo: number;
+  reserva_online_habilitada: number;
+}
+
+export const editarReservaOnline = async (
+  localId: number,
+  mascotaId: number,
+  payload: EditarReservaOnlinePayload,
+): Promise<{ id: number; reservaOnlineHabilitada: boolean }> => {
+  const value = payload.reservaOnlineHabilitada ? 1 : 0;
+  const [result] = await pool.query<ResultSetHeader>(
+    `UPDATE mascotas
+     SET reserva_online_habilitada = ?
+     WHERE id = ? AND local_id = ? AND (? = 0 OR activo = 1)`,
+    [value, mascotaId, localId, value],
+  );
+
+  if (result.affectedRows === 1) {
+    return { id: mascotaId, reservaOnlineHabilitada: payload.reservaOnlineHabilitada };
+  }
+
+  const [rows] = await pool.query<MascotaReservaOnlineRow[]>(
+    `SELECT id, activo, reserva_online_habilitada
+     FROM mascotas WHERE id = ? AND local_id = ?`,
+    [mascotaId, localId],
+  );
+  if (!rows.length) throw new MascotaReservaOnlineError(404, "PET_MASCOTA_NOT_FOUND");
+  if (payload.reservaOnlineHabilitada && rows[0].activo !== 1) {
+    throw new MascotaReservaOnlineError(409, "PET_MASCOTA_INACTIVE");
+  }
+  if (rows[0].reserva_online_habilitada !== value) {
+    throw new MascotaReservaOnlineError(409, "PET_MASCOTA_RESERVA_ONLINE_CONFLICT");
+  }
+  return { id: mascotaId, reservaOnlineHabilitada: payload.reservaOnlineHabilitada };
 };
 
 export const crearResponsable = async (localId: number, payload: CrearResponsablePayload): Promise<{ id: number; nombre: string; telefono: string; local_id: number; created_at: string; isNew: boolean }> => {

@@ -20,6 +20,10 @@ export interface EditarMascotaPayload {
   altaExigencia?: boolean;
 }
 
+export interface EditarReservaOnlinePayload {
+  reservaOnlineHabilitada: boolean;
+}
+
 export interface AsociarResponsablePayload {
   clienteId: number;
 }
@@ -172,6 +176,26 @@ export function validarEditarMascota(payload: unknown): { ok: boolean; errores: 
   if (altaExigencia !== undefined) data.altaExigencia = altaExigencia as boolean;
 
   return { ok: true, errores: [], data };
+}
+
+export function validarReservaOnline(payload: unknown): {
+  ok: boolean;
+  errores: string[];
+  data?: EditarReservaOnlinePayload;
+} {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, errores: ["Payload inválido"] };
+  }
+
+  const data = payload as Record<string, unknown>;
+  if (Object.keys(data).length !== 1 || !Object.prototype.hasOwnProperty.call(data, "reservaOnlineHabilitada")) {
+    return { ok: false, errores: ["El body debe contener únicamente reservaOnlineHabilitada"] };
+  }
+  if (typeof data.reservaOnlineHabilitada !== "boolean") {
+    return { ok: false, errores: ["reservaOnlineHabilitada debe ser boolean"] };
+  }
+
+  return { ok: true, errores: [], data: { reservaOnlineHabilitada: data.reservaOnlineHabilitada } };
 }
 
 export function validarAsociarResponsable(payload: unknown): { ok: boolean; errores: string[]; data?: AsociarResponsablePayload } {

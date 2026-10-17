@@ -5,6 +5,7 @@ import {
   validarEditarMascota,
   validarAsociarResponsable,
   validarCrearResponsable,
+  validarReservaOnline,
 } from "./mascotas.types";
 import * as petService from "./mascotas.service";
 
@@ -91,6 +92,31 @@ export const editarMascota = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: error.message });
     }
     return res.status(500).json({ error: "Error editando mascota" });
+  }
+};
+
+export const editarReservaOnline = async (req: AuthRequest, res: Response) => {
+  const localId = req.user?.localId;
+  if (!Number.isSafeInteger(localId) || localId < 1) {
+    return res.status(401).json({ error: "No autorizado" });
+  }
+
+  const rawId = req.params.id;
+  if (typeof rawId !== "string" || !/^[1-9]\d*$/.test(rawId) || !Number.isSafeInteger(Number(rawId)) || Number(rawId) > 2147483647) {
+    return res.status(400).json({ error: "ID de mascota inválido" });
+  }
+
+  const validation = validarReservaOnline(req.body);
+  if (!validation.ok) return res.status(400).json({ error: validation.errores.join(", ") });
+
+  try {
+    const result = await petService.editarReservaOnline(localId, Number(rawId), validation.data!);
+    return res.json(result);
+  } catch (error: unknown) {
+    if (error instanceof petService.MascotaReservaOnlineError) {
+      return res.status(error.status).json({ error: error.code });
+    }
+    return res.status(500).json({ error: "Error actualizando habilitación de reserva online" });
   }
 };
 
