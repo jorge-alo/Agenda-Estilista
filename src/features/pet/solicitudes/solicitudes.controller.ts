@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { AuthRequest } from "../../../middlewares/auth.middleware";
 import * as service from "./solicitudes.service";
+import { notificarNuevaSolicitud } from "./solicitudes.notification";
 import { SolicitudError, validarCambio, validarCrear, validarFiltro, validarId } from "./solicitudes.types";
 
 function errorResponse(error: unknown, res: Response): Response {
@@ -12,9 +13,12 @@ export async function crear(req: Request, res: Response) {
   try {
     const slug = req.params.slug;
     if (typeof slug !== "string" || !slug || slug.length > 100) throw new SolicitudError(404, "PET_LOCAL_NOT_FOUND");
-    const localId = await service.resolverLocal(slug);
+    const local = await service.resolverLocal(slug);
     const data = validarCrear(req.body);
-    await service.crear(localId, data);
+    const creada = await service.crear(local, data);
+    void notificarNuevaSolicitud(creada).catch(() => {
+      console.error("No se pudo enviar notificación de nueva solicitud PET", { solicitudId: creada.solicitudId });
+    });
     return res.status(201).json({ ok: true });
   } catch (error) { return errorResponse(error, res); }
 }

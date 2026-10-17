@@ -19,24 +19,50 @@ interface SolicitudRow extends RowDataPacket {
   updated_at: Date;
 }
 
-export async function resolverLocal(slug: string): Promise<number> {
+export interface LocalSolicitudPublica {
+  id: number;
+  telefono: string | null;
+}
+
+export interface SolicitudCreada {
+  solicitudId: number;
+  localId: number;
+  telefonoLocal: string | null;
+  responsableNombre: string;
+  responsableTelefono: string;
+  mascotaNombre: string;
+  mascotaRaza: string | null;
+  motivoContacto: string | null;
+}
+
+export async function resolverLocal(slug: string): Promise<LocalSolicitudPublica> {
   const [locales] = await pool.query<RowDataPacket[]>(
-    "SELECT id FROM locales WHERE slug = ? AND activo = 1 AND business_type = 'PET_GROOMING'",
+    "SELECT id, telefono FROM locales WHERE slug = ? AND activo = 1 AND business_type = 'PET_GROOMING'",
     [slug]
   );
   if (locales.length === 0) throw new SolicitudError(404, "PET_LOCAL_NOT_FOUND");
-  return locales[0].id as number;
+  return { id: locales[0].id as number, telefono: locales[0].telefono as string | null };
 }
 
-export async function crear(localId: number, data: CrearSolicitud): Promise<void> {
-  await pool.query(
+export async function crear(local: LocalSolicitudPublica, data: CrearSolicitud): Promise<SolicitudCreada> {
+  const [result] = await pool.query<ResultSetHeader>(
     `INSERT INTO solicitudes_pet
      (local_id, responsable_nombre, responsable_telefono, responsable_telefono_secundario,
       mascota_nombre, mascota_raza, mascota_fecha_nacimiento, mascota_tamano, mascota_sexo, motivo_contacto)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [localId, data.responsableNombre, data.responsableTelefono, data.responsableTelefonoSecundario,
+    [local.id, data.responsableNombre, data.responsableTelefono, data.responsableTelefonoSecundario,
       data.mascotaNombre, data.mascotaRaza, data.mascotaFechaNacimiento, data.mascotaTamano, data.mascotaSexo, data.motivoContacto]
   );
+  return {
+    solicitudId: result.insertId,
+    localId: local.id,
+    telefonoLocal: local.telefono,
+    responsableNombre: data.responsableNombre,
+    responsableTelefono: data.responsableTelefono,
+    mascotaNombre: data.mascotaNombre,
+    mascotaRaza: data.mascotaRaza,
+    motivoContacto: data.motivoContacto,
+  };
 }
 
 export async function listar(localId: number, estado: EstadoSolicitud | null) {

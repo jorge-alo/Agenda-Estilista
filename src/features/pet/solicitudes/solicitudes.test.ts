@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import Module from "node:module";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { after, before, beforeEach, test } from "node:test";
@@ -6,8 +7,24 @@ import type { Server } from "node:http";
 import express from "express";
 import jwt from "jsonwebtoken";
 import { pool } from "../../../config/db";
-import { solicitudesPublicRouter } from "./solicitudes.routes";
-import petRouter from "../pet.routes";
+
+type SenderArgs = { to: string; body: string; localId: string };
+const senderCalls: SenderArgs[] = [];
+let senderBehavior: (args: SenderArgs) => Promise<void> = async () => {};
+const senderModuleId = require.resolve("../../notifications/infrastructure/whatsapp.provider");
+const senderStub = new Module(senderModuleId);
+senderStub.filename = senderModuleId;
+senderStub.loaded = true;
+senderStub.exports = {
+  sendWhatsApp: async (to: string, body: string, localId: string) => {
+    const args = { to, body, localId };
+    senderCalls.push(args);
+    return senderBehavior(args);
+  },
+};
+require.cache[senderModuleId] = senderStub;
+const { solicitudesPublicRouter } = require("./solicitudes.routes") as typeof import("./solicitudes.routes");
+const { default: petRouter } = require("../pet.routes") as typeof import("../pet.routes");
 
 const jwtSecret = "PET10B_SOLO_TESTS";
 const prefix = `pet10b-${randomUUID()}`;
@@ -44,15 +61,17 @@ before(async () => {
   const addr = server.address();
   assert.ok(addr && typeof addr !== "string");
   port = addr.port;
-  for (const [index, kind, active] of [[0, "PET_GROOMING", 1], [1, "PET_GROOMING", 1], [2, "PET_GROOMING", 1], [3, "BEAUTY", 1], [4, "PET_GROOMING", 0]] as const) {
-    const [result]: any = await pool.query("INSERT INTO locales (nombre, slug, business_type, activo) VALUES (?, ?, ?, ?)",
-      [prefix, `${prefix}-${index}`, kind, active]);
+  for (const [index, kind, active, telefono] of [[0, "PET_GROOMING", 1, "011 5555-0000"], [1, "PET_GROOMING", 1, "011 5555-1111"], [2, "PET_GROOMING", 1, "011 5555-2222"], [3, "BEAUTY", 1, "011 5555-3333"], [4, "PET_GROOMING", 0, "011 5555-4444"], [5, "PET_GROOMING", 1, null], [6, "PET_GROOMING", 1, "   "], [7, "PET_GROOMING", 1, "sin número"]] as const) {
+    const [result]: any = await pool.query("INSERT INTO locales (nombre, slug, business_type, activo, telefono) VALUES (?, ?, ?, ?, ?)",
+      [prefix, `${prefix}-${index}`, kind, active, telefono]);
     ids.push(result.insertId);
   }
 });
 beforeEach(t => {
   if (!("mock" in t)) throw new Error("Mock unavailable");
   t.mock.property(process, "env", { ...process.env, JWT_SECRET: jwtSecret });
+  senderCalls.length = 0;
+  senderBehavior = async () => {};
 });
 after(async () => {
   try {
@@ -81,6 +100,12 @@ test("público: slug PET activo, body mínimo, snapshot y ninguna entidad real",
   assert.equal(rows.length, 1);
   assert.equal(rows[0].estado, "NUEVA");
   assert.equal(rows[0].responsable_nombre, "Ana");
+  assert.equal(senderCalls.length, 1);
+  assert.deepEqual({ to: senderCalls[0].to, localId: senderCalls[0].localId }, { to: "5491155550000", localId: String(ids[0]) });
+  assert.match(senderCalls[0].body, /Responsable: Ana/);
+  assert.match(senderCalls[0].body, /Mascota: Rocky/);
+  assert.match(senderCalls[0].body, /Teléfono: 549123456/);
+  assert.doesNotMatch(senderCalls[0].body, /null|undefined|telefonoSecundario|localId|estado/i);
 });
 
 test("público: body completo y fecha calendario estricta", async () => {
@@ -88,6 +113,65 @@ test("público: body completo y fecha calendario estricta", async () => {
   assert.equal((await call("POST", publico(slugs[1]), complete)).status, 201);
   const [rows]: any = await pool.query("SELECT DATE_FORMAT(mascota_fecha_nacimiento, '%Y-%m-%d') AS fecha, motivo_contacto, responsable_telefono_secundario FROM solicitudes_pet WHERE local_id = ?", [ids[1]]);
   assert.deepEqual([rows[0].fecha, rows[0].motivo_contacto, rows[0].responsable_telefono_secundario], ["2020-05-10", "Baño y corte", "456"]);
+  assert.equal(senderCalls.length, 1);
+  assert.match(senderCalls[0].body, /Raza: Caniche/);
+  assert.match(senderCalls[0].body, /Motivo: Baño y corte/);
+  assert.doesNotMatch(senderCalls[0].body, /456/);
+});
+
+test("sin raza ni motivo el mensaje omite campos opcionales", async () => {
+  assert.deepEqual(await call("POST", publico(slugs[2]), body), { status: 201, data: { ok: true } });
+  assert.equal(senderCalls.length, 1);
+  assert.doesNotMatch(senderCalls[0].body, /Raza:|Motivo:|null|undefined/);
+  assert.equal(senderCalls[0].body, [
+    "Nueva solicitud de peluquería canina", "", "Responsable: Ana", "Mascota: Rocky", "Teléfono: 549123456",
+  ].join("\n"));
+});
+
+test("sender se inicia después del INSERT; fallo no retrasa ni cambia el 201", async t => {
+  let signalStarted!: () => void;
+  let rejectSender!: (error: Error) => void;
+  let signalCaught!: (args: unknown[]) => void;
+  const started = new Promise<void>(resolve => { signalStarted = resolve; });
+  const caught = new Promise<unknown[]>(resolve => { signalCaught = resolve; });
+  const pending = new Promise<void>((_resolve, reject) => { rejectSender = reject; });
+  senderBehavior = async () => { signalStarted(); return pending; };
+  t.mock.method(console, "error", (...args: unknown[]) => { signalCaught(args); });
+
+  const response = await call("POST", publico(), body);
+  assert.deepEqual(response, { status: 201, data: { ok: true } });
+  await started;
+  const [rows]: any = await pool.query("SELECT id, estado FROM solicitudes_pet WHERE local_id = ? AND responsable_nombre = 'Ana' ORDER BY id DESC LIMIT 1", [ids[0]]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].estado, "NUEVA");
+  rejectSender(new Error("Evolution fallo con contenido privado simulado"));
+  assert.deepEqual(await caught, ["No se pudo enviar notificación de nueva solicitud PET", { solicitudId: rows[0].id }]);
+});
+
+test("local sin teléfono NULL, vacío o sin dígitos conserva solicitud y no llama al sender", async t => {
+  let warning: unknown[] | null = null;
+  t.mock.method(console, "warn", (...args: unknown[]) => { warning = args; });
+  for (const index of [5, 6, 7]) {
+    assert.deepEqual(await call("POST", publico(`${prefix}-${index}`), body), { status: 201, data: { ok: true } });
+    const [rows]: any = await pool.query("SELECT id, estado FROM solicitudes_pet WHERE local_id = ?", [ids[index]]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].estado, "NUEVA");
+    assert.deepEqual(warning, ["Notificación PET omitida: el local no tiene teléfono válido", { solicitudId: rows[0].id }]);
+  }
+  assert.equal(senderCalls.length, 0);
+});
+
+test("fallo del INSERT no dispara notificación", async t => {
+  const original = pool.query.bind(pool);
+  const [before]: any = await original("SELECT COUNT(*) AS total FROM solicitudes_pet WHERE local_id = ? AND responsable_nombre = 'Ana'", [ids[0]]);
+  t.mock.method(pool, "query", ((...args: Parameters<typeof pool.query>) => {
+    if (String(args[0]).includes("INSERT INTO solicitudes_pet")) return Promise.reject(new Error("fallo INSERT de prueba"));
+    return original(...args);
+  }) as typeof pool.query);
+  assert.equal((await call("POST", publico(), body)).status, 500);
+  assert.equal(senderCalls.length, 0);
+  const [rows]: any = await original("SELECT id FROM solicitudes_pet WHERE local_id = ? AND responsable_nombre = 'Ana'", [ids[0]]);
+  assert.equal(rows.length, before[0].total);
 });
 
 test("público: slug inexistente, BEAUTY e inactivo tienen la misma respuesta", async () => {
@@ -96,6 +180,7 @@ test("público: slug inexistente, BEAUTY e inactivo tienen la misma respuesta", 
   assert.deepEqual(results[0], results[1]);
   assert.deepEqual(results[1], results[2]);
   assert.deepEqual(await call("POST", publico(`${prefix}-3`), {}), results[1]);
+  assert.equal(senderCalls.length, 0);
 });
 
 test("público: valida campos obligatorios, longitud, fecha, tamaño/sexo y rechaza extras", async () => {
@@ -118,15 +203,17 @@ test("público: valida campos obligatorios, longitud, fecha, tamaño/sexo y rech
     const result = await call("POST", publico(slugs[index % 2]), payload);
     assert.equal(result.status, 400, `caso ${index}: ${JSON.stringify(result)}`);
   }
+  assert.equal(senderCalls.length, 0);
 });
 
 test("público: limiter por IP + slug (10 en 15 minutos)", async () => {
-  const slug = `${prefix}-5`;
-  const [r]: any = await pool.query("INSERT INTO locales (nombre, slug, business_type) VALUES (?, ?, 'PET_GROOMING')", [prefix, slug]);
+  const slug = `${prefix}-8`;
+  const [r]: any = await pool.query("INSERT INTO locales (nombre, slug, business_type, telefono) VALUES (?, ?, 'PET_GROOMING', ?)", [prefix, slug, "011 5555-8888"]);
   ids.push(r.insertId);
   for (let n = 0; n < 10; n++) assert.equal((await call("POST", publico(slug), body)).status, 201);
   assert.equal((await call("POST", publico(slug), body)).status, 429);
-  assert.equal((await call("POST", publico(`${prefix}-6`), body)).status, 404);
+  assert.equal((await call("POST", publico(`${prefix}-9`), body)).status, 404);
+  assert.equal(senderCalls.length, 10);
 });
 
 test("DB: estado default, CHECK, FK e índice no permiten valores inválidos", async () => {
