@@ -1,6 +1,7 @@
 // whatsapp.controller.ts
 import { Request, Response } from "express";
 import { evolutionClient } from "./infrastructure/evolution.client";
+import { logEvolutionFailure } from "./infrastructure/evolution.logging";
 
 interface AuthRequest extends Request {
   user?: {
@@ -23,12 +24,15 @@ export const conectarWhatsApp = async (req: AuthRequest, res: Response) => {
       instanceName: String(localId),
       qrcode: true,
     });
-    console.log(`✨ Instancia ${localId} creada con éxito.`);
-  } catch (error: any) {
-    console.log("❌ ERROR O TIMEOUT AL CREAR INSTANCIA");
+  } catch (error: unknown) {
+    logEvolutionFailure("createInstance", String(localId), error);
 
-    const mensaje = error?.response?.data?.response?.message?.[0] || "";
-    const yaExiste = mensaje.toLowerCase().includes("already in use") || error?.response?.status === 400;
+    const existingError = error as { response?: { data?: { response?: { message?: unknown } }; status?: number } };
+    const responseMessage = existingError.response?.data?.response?.message;
+    const mensaje = Array.isArray(responseMessage)
+      ? responseMessage[0]
+      : typeof responseMessage === "string" ? responseMessage : undefined;
+    const yaExiste = (typeof mensaje === "string" && mensaje.toLowerCase().includes("already in use")) || existingError.response?.status === 400;
 
     if (!yaExiste) {
       return res.status(500).json({
@@ -36,14 +40,19 @@ export const conectarWhatsApp = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    console.log("⚠️ La instancia ya existía en Evolution API, continuamos para obtener el QR...");
+    console.info("Evolution instance already exists; continuing connection", {
+      provider: "evolution",
+      operation: "createInstance",
+      instance: /^\d{1,10}$/.test(String(localId)) ? String(localId) : "unknown",
+      status: existingError.response?.status,
+    });
   }
 
   try {
     const { data } = await evolutionClient.get(`/instance/connect/${localId}`);
     return res.json({ qr: data.base64 });
-  } catch (error: any) {
-    console.log("❌ Error obteniendo QR:", error.response?.data || error.message);
+  } catch (error: unknown) {
+    logEvolutionFailure("connectInstance", String(localId), error);
     return res.status(500).json({ error: "Error obteniendo QR" });
   }
 };

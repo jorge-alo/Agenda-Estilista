@@ -63,12 +63,14 @@ export const iniciarCronRecordatorios = () => {
 
             // Pausa de 1 segundo entre mensajes para no saturar
             await new Promise((r) => setTimeout(r, 1000));
-          } catch (err) {
+          } catch {
             // Si falla un mensaje no rompemos el loop
-            console.error(
-              `❌ Error enviando recordatorio al turno ${turno.id}:`,
-              err
-            );
+            console.error("WhatsApp reminder delivery failed", {
+              provider: "evolution",
+              operation: "turno-reminder",
+              instance: String(turno.local_id),
+              turnoId: turno.id,
+            });
           }
         }
 

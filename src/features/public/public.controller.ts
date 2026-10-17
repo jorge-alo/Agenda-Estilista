@@ -40,8 +40,12 @@ export const reservar = async (req: Request, res: Response) => {
         localNombre: turno.localNombre,
         localTelefono: telefonoLocalFormateado,
         localId: String(turno.localId)
-      }).catch((err) => {
-        console.error("Error enviando WhatsApp (no bloqueante):", err);
+      }).catch(() => {
+        console.error("WhatsApp confirmation delivery failed", {
+          provider: "evolution",
+          operation: "turno-confirmation",
+          instance: String(turno.localId),
+        });
       });
     }
 

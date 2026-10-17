@@ -1,5 +1,6 @@
 // src/features/notifications/infrastructure/whatsapp.provider.ts
 import { evolutionClient } from "./evolution.client";
+import { logEvolutionFailure } from "./evolution.logging";
 
 export const sendWhatsApp = async (
   to: string,
@@ -13,12 +14,8 @@ export const sendWhatsApp = async (
         text: body,
       },
     });
-    console.log(`✅ WhatsApp enviado a ${to} desde instancia ${localId}`);
-  } catch (error: any) {
-    console.error(
-      `❌ Error enviando WhatsApp a ${to}:`,
-      error.response?.data || error.message
-    );
+  } catch (error: unknown) {
+    logEvolutionFailure("sendText", localId, error);
     throw error;
   }
 };
