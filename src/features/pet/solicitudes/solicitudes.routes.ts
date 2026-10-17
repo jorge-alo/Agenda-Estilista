@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 import { authorizeRole } from "../../../middlewares/authorizeRole";
-import { cambiarEstado, crear, listar } from "./solicitudes.controller";
+import { cambiarEstado, convertir, crear, listar } from "./solicitudes.controller";
 
 export const solicitudesPublicRouter = Router();
 const solicitudLimiter = rateLimit({
@@ -16,3 +16,4 @@ solicitudesPublicRouter.post("/:slug/solicitudes", solicitudLimiter, crear);
 export const solicitudesAdminRouter = Router();
 solicitudesAdminRouter.get("/solicitudes", authorizeRole("admin"), listar);
 solicitudesAdminRouter.patch("/solicitudes/:id/estado", authorizeRole("admin"), cambiarEstado);
+solicitudesAdminRouter.post("/solicitudes/:id/convertir", authorizeRole("admin"), convertir);

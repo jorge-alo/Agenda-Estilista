@@ -1,6 +1,7 @@
 import { pool } from "../../../config/db";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { CrearSolicitud, EstadoSolicitud, SolicitudError } from "./solicitudes.types";
+import { SolicitudSnapshot, validarConversion } from "./conversion.types";
 
 interface SolicitudRow extends RowDataPacket {
   id: number;
@@ -72,4 +73,92 @@ export async function cambiarEstado(localId: number, id: number, destino: Estado
     [destino, id, localId, origen]
   );
   if (result.affectedRows === 0) throw new SolicitudError(409, "PET_SOLICITUD_STATE_TRANSITION_INVALID");
+}
+
+interface SolicitudConversionRow extends RowDataPacket, SolicitudSnapshot {
+  estado: EstadoSolicitud;
+}
+
+interface ClienteIdRow extends RowDataPacket { id: number }
+
+export async function convertir(localId: number, id: number, body: unknown) {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [locales] = await connection.query<RowDataPacket[]>(
+      "SELECT id FROM locales WHERE id = ? FOR UPDATE", [localId]
+    );
+    if (!locales.length) throw new SolicitudError(404, "PET_SOLICITUD_NOT_FOUND");
+
+    // Primera lectura de la solicitud bajo lock; no crear un snapshot anterior al lock local.
+    const [solicitudes] = await connection.query<SolicitudConversionRow[]>(
+      `SELECT responsable_nombre, responsable_telefono, mascota_nombre, mascota_raza,
+              DATE_FORMAT(mascota_fecha_nacimiento, '%Y-%m-%d') AS mascota_fecha_nacimiento,
+              mascota_tamano, mascota_sexo, estado
+       FROM solicitudes_pet WHERE id = ? AND local_id = ? FOR UPDATE`,
+      [id, localId]
+    );
+    if (!solicitudes.length) throw new SolicitudError(404, "PET_SOLICITUD_NOT_FOUND");
+    const solicitud = solicitudes[0];
+    if (solicitud.estado !== "NUEVA" && solicitud.estado !== "CONTACTADA") {
+      throw new SolicitudError(409, "PET_SOLICITUD_NOT_CONVERTIBLE");
+    }
+    const ficha = validarConversion(body, solicitud);
+
+    const [clientes] = await connection.query<ClienteIdRow[]>(
+      "SELECT id FROM clientes WHERE telefono = ? AND local_id = ?",
+      [ficha.responsable.telefono, localId]
+    );
+    let clienteId: number;
+    let reutilizado = clientes.length > 0;
+    if (reutilizado) {
+      clienteId = clientes[0].id;
+    } else {
+      try {
+        const [insert] = await connection.query<ResultSetHeader>(
+          "INSERT INTO clientes (nombre, telefono, local_id) VALUES (?, ?, ?)",
+          [ficha.responsable.nombre, ficha.responsable.telefono, localId]
+        );
+        clienteId = insert.insertId;
+      } catch (error: unknown) {
+        const duplicate = error as { code?: string; sqlMessage?: string };
+        if (duplicate.code !== "ER_DUP_ENTRY" || !duplicate.sqlMessage?.includes("unique_cliente_local")) throw error;
+        // Un escritor legacy pudo insertar el mismo teléfono fuera del lock de locales.
+        const [ganador] = await connection.query<ClienteIdRow[]>(
+          "SELECT id FROM clientes WHERE telefono = ? AND local_id = ? FOR UPDATE",
+          [ficha.responsable.telefono, localId]
+        );
+        if (!ganador.length) throw new Error("Cliente no encontrado tras colisión UNIQUE");
+        clienteId = ganador[0].id;
+        reutilizado = true;
+      }
+    }
+
+    const [mascota] = await connection.query<ResultSetHeader>(
+      `INSERT INTO mascotas
+       (local_id, nombre, raza, fecha_nacimiento, sexo, tamano, tipo_pelo, observaciones,
+        alta_exigencia, reserva_online_habilitada, activo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1)`,
+      [localId, ficha.mascota.nombre, ficha.mascota.raza, ficha.mascota.fechaNacimiento,
+        ficha.mascota.sexo, ficha.mascota.tamano, ficha.mascota.tipoPelo, ficha.mascota.observaciones]
+    );
+    await connection.query(
+      "INSERT INTO mascota_clientes (local_id, mascota_id, cliente_id) VALUES (?, ?, ?)",
+      [localId, mascota.insertId, clienteId]
+    );
+    const [updated] = await connection.query<ResultSetHeader>(
+      `UPDATE solicitudes_pet
+       SET estado = 'CONVERTIDA', cliente_id = ?, mascota_id = ?, converted_at = NOW(), updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND local_id = ? AND estado IN ('NUEVA', 'CONTACTADA')`,
+      [clienteId, mascota.insertId, id, localId]
+    );
+    if (updated.affectedRows !== 1) throw new SolicitudError(409, "PET_SOLICITUD_NOT_CONVERTIBLE");
+    await connection.commit();
+    return { solicitudId: id, estado: "CONVERTIDA" as const, cliente: { id: clienteId, reutilizado }, mascota: { id: mascota.insertId } };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 }

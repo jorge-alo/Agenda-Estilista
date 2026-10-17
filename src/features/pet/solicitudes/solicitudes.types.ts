@@ -34,7 +34,7 @@ function texto(value: unknown, max: number, obligatorio = false): string | null 
   return limpio;
 }
 
-function fecha(value: unknown): string | null {
+export function fecha(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new SolicitudError(400, "PET_SOLICITUD_INVALID_BODY");
   const date = new Date(`${value}T00:00:00Z`);

@@ -56,7 +56,10 @@ beforeEach(t => {
 });
 after(async () => {
   try {
-    for (const id of ids) await pool.query("DELETE FROM locales WHERE id = ?", [id]);
+    for (const id of ids) {
+      await pool.query("DELETE FROM solicitudes_pet WHERE local_id = ?", [id]);
+      await pool.query("DELETE FROM locales WHERE id = ?", [id]);
+    }
     const [rows]: any = await pool.query("SELECT COUNT(*) AS total FROM locales WHERE nombre = ? AND slug LIKE ?", [prefix, `${prefix}%`]);
     assert.equal(rows[0].total, 0, "sin locales fixture PET-10B");
   } finally {
@@ -184,8 +187,8 @@ test("admin: transiciones permitidas y terminales", async () => {
   assert.equal((await call("PATCH", `${admin}/${c}/estado`, { estado: "CONTACTADA", extra: 1 }, token())).status, 400);
   assert.equal((await patch(c, "CONTACTADA", ids[1])).status, 404);
   assert.equal((await patch(2147483647, "CONTACTADA")).status, 404);
-  const [r]: any = await pool.query("INSERT INTO solicitudes_pet (local_id, responsable_nombre, responsable_telefono, mascota_nombre, estado) VALUES (?, ?, ?, ?, 'CONVERTIDA')", [ids[0], prefix, "1", "test"]);
-  assert.equal((await patch(r.insertId, "DESCARTADA")).status, 409);
+  assert.equal((await call("POST", `${admin}/${c}/convertir`, {}, token())).status, 201);
+  assert.equal((await patch(c, "DESCARTADA")).status, 409);
 });
 
 test("admin: PATCH concurrentes con lectura inicial idéntica no pisan transición", async t => {

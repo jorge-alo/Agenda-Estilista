@@ -38,3 +38,13 @@ export async function cambiarEstado(req: AuthRequest, res: Response) {
     return res.json({ ok: true });
   } catch (error) { return errorResponse(error, res); }
 }
+
+export async function convertir(req: AuthRequest, res: Response) {
+  try {
+    const localId = req.user?.localId;
+    if (!Number.isSafeInteger(localId) || localId <= 0) return res.status(401).json({ error: "No autorizado" });
+    const id = validarId(req.params.id);
+    const resultado = await service.convertir(localId, id, req.body);
+    return res.status(201).json(resultado);
+  } catch (error) { return errorResponse(error, res); }
+}
