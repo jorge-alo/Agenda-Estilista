@@ -2,6 +2,8 @@ import { Request, Response } from "express";
 import * as turnoService from "../public/public.service";
 import { sendTurnoConfirmado } from "../notifications/application/sendWhatsAppNotification";
 import { formatPhoneAR } from "../../helpers/formatPhoneAR";
+import { InvalidClientPhoneError } from "../../shared/phone/normalizeClientPhone";
+import { ClientPhoneConflictError } from "../../shared/phone/clientPhoneDuplicate";
 
 export const reservar = async (req: Request, res: Response) => {
   try {
@@ -51,6 +53,8 @@ export const reservar = async (req: Request, res: Response) => {
 
     res.json({ message: "Turno reservado", telefono: telefonoLocalFormateado, mpLink: turno.mpLink  });
   } catch (error: any) {
+    if (error instanceof InvalidClientPhoneError) return res.status(400).json({ error: error.code });
+    if (error instanceof ClientPhoneConflictError) return res.status(409).json({ error: error.code });
     res.status(400).json({ error: error.message });
   }
 };

@@ -1145,7 +1145,7 @@ async function datosReservaPublica() {
   return {
     slug: String(locals[0].slug), fecha: "2099-01-01", hora: "13:00:00",
     estilista_id: estilistaIds[0], servicio_id: servicio.insertId,
-    cliente_nombre: "Cliente público de prueba H5", cliente_telefono: "0000000001",
+    cliente_nombre: "Cliente público de prueba H5", cliente_telefono: "1123456791",
   };
 }
 

@@ -1,4 +1,6 @@
 import { Response } from "express";
+import { InvalidClientPhoneError } from "../../../shared/phone/normalizeClientPhone";
+import { ClientPhoneConflictError } from "../../../shared/phone/clientPhoneDuplicate";
 import { AuthRequest } from "../../../middlewares/auth.middleware";
 import {
   validarCrearMascota,
@@ -135,6 +137,8 @@ export const crearResponsable = async (req: AuthRequest, res: Response) => {
     const responsable = await petService.crearResponsable(localId, validation.data!);
     return res.status(responsable.isNew ? 201 : 200).json(responsable);
   } catch (error: any) {
+    if (error instanceof InvalidClientPhoneError) return res.status(400).json({ error: error.code });
+    if (error instanceof ClientPhoneConflictError) return res.status(409).json({ error: error.code });
     if (error.code === "ER_DUP_ENTRY") {
       return res.status(409).json({ error: "El teléfono ya existe en este local" });
     }

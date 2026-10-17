@@ -93,7 +93,7 @@ function datosTurno(): Record<string, unknown> {
   return {
     fecha: "2099-01-01", hora: "10:00",
     estilista_id: 303, servicio_id: 404,
-    cliente_nombre: "Cliente ficticio SEG-001", cliente_telefono: "0000000000",
+    cliente_nombre: "Cliente ficticio SEG-001", cliente_telefono: "1123456789",
   };
 }
 
@@ -124,7 +124,7 @@ function verificarTenantEfectivo() {
   assert.ok(clienteLookup);
   assert.ok(clienteInsert);
   assert.ok(turnoInsert);
-  const tenants = [clienteLookup.values[1], clienteInsert.values[2], turnoInsert.values[5]];
+  const tenants = [clienteLookup.values[1], clienteInsert.values[3], turnoInsert.values[5]];
   assert.deepEqual(tenants, [LOCAL_A, LOCAL_A, LOCAL_A]);
   assert.ok(tenants.every((tenant) => tenant !== LOCAL_B), "B nunca debe ser el tenant efectivo");
   assert.equal(connectionRequests, 1);

@@ -1,6 +1,8 @@
 import { pool } from "../../config/db";
 import { sumarMinutos } from "../../helpers/sumarMinutos";
 import { ErrorCreacionPreference, pagosService } from "../pagos/pagos.service";
+import { normalizeClientPhone } from "../../shared/phone/normalizeClientPhone";
+import { ClientPhoneConflictError, clientPhoneDuplicateKey } from "../../shared/phone/clientPhoneDuplicate";
 
 export const createTurnoPublico = async (data: any) => {
   const {
@@ -12,6 +14,9 @@ export const createTurnoPublico = async (data: any) => {
     cliente_nombre,
     cliente_telefono,
   } = data;
+
+  const canonical = normalizeClientPhone(cliente_telefono);
+  const display = cliente_telefono.trim();
 
   const connection = await pool.getConnection();
 
@@ -73,19 +78,30 @@ export const createTurnoPublico = async (data: any) => {
 
     // 👤 4. buscar o crear cliente
     const [clientes]: any = await connection.query(
-      `SELECT id FROM clientes WHERE telefono = ? AND local_id = ?`,
-      [cliente_telefono, localIdFinal]
+      `SELECT id FROM clientes WHERE telefono_normalizado = ? AND local_id = ?`,
+      [canonical, localIdFinal]
     );
 
     let clienteId;
     if (clientes.length > 0) {
       clienteId = clientes[0].id;
     } else {
-      const [clienteResult]: any = await connection.query(
-        `INSERT INTO clientes (nombre, telefono, local_id) VALUES (?, ?, ?)`,
-        [cliente_nombre, cliente_telefono, localIdFinal]
-      );
-      clienteId = clienteResult.insertId;
+      try {
+        const [clienteResult]: any = await connection.query(
+          `INSERT INTO clientes (nombre, telefono, telefono_normalizado, local_id) VALUES (?, ?, ?, ?)`,
+          [cliente_nombre, display, canonical, localIdFinal]
+        );
+        clienteId = clienteResult.insertId;
+      } catch (error) {
+        const key = clientPhoneDuplicateKey(error);
+        if (!key) throw error;
+        const [winner]: any = await connection.query(
+          `SELECT id FROM clientes WHERE telefono_normalizado = ? AND local_id = ? FOR UPDATE`,
+          [canonical, localIdFinal]
+        );
+        if (!winner.length) throw new ClientPhoneConflictError();
+        clienteId = winner[0].id;
+      }
     }
 
     // 💾 5. insertar turno con ESTADO DINÁMICO

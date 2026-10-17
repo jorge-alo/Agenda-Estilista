@@ -7,6 +7,8 @@ import { after, before, beforeEach, test, describe } from "node:test";
 import express from "express";
 import jwt from "jsonwebtoken";
 import { pool } from "../../../config/db";
+import { normalizeClientPhone } from "../../../shared/phone/normalizeClientPhone";
+import { clientPhoneDuplicateKey } from "../../../shared/phone/clientPhoneDuplicate";
 
 const JWT_TEST_SECRET = "SECRETO_JWT_FICTICIO_PET02_SOLO_TESTS";
 
@@ -450,16 +452,19 @@ describe("PET-02B Responsables - Crear/Buscar", () => {
   test("Mismo teléfono + mismo local reutiliza existente", async () => {
     await httpRequest("POST", "/api/pet/admin/responsables", petAdminToken(), {
       nombre: "María González",
-      telefono: "1199999999",
+      telefono: "1123456790",
     });
     const result = await httpRequest("POST", "/api/pet/admin/responsables", petAdminToken(), {
       nombre: "Nombre Distinto",
-      telefono: "1199999999",
+      telefono: "+54 11 2345 6790",
     });
     assert.equal(result.statusCode, 200);
     const responsable = JSON.parse(result.body);
     assert.equal(responsable.nombre, "María González");
+    assert.equal(responsable.telefono, "1123456790");
     assert.equal(responsable.isNew, false);
+    const [[stored]]: any = await pool.query("SELECT telefono_normalizado FROM clientes WHERE id = ? AND local_id = ?", [responsable.id, petLocalId]);
+    assert.equal(stored.telefono_normalizado, normalizeClientPhone("1123456790"));
   });
 
   test("Mismo teléfono en otro local es persona distinta", async () => {
@@ -489,6 +494,64 @@ describe("PET-02B Responsables - Crear/Buscar", () => {
     assert.equal(result.statusCode, 200);
     const responsable = JSON.parse(result.body);
     assert.equal(responsable.nombre, "Original");
+  });
+
+  test("teléfono inválido devuelve 400 y no crea cliente", async () => {
+    const [[before]]: any = await pool.query("SELECT COUNT(*) AS total FROM clientes WHERE local_id = ?", [petLocalId]);
+    const response = await httpRequest("POST", "/api/pet/admin/responsables", petAdminToken(), { nombre: "Inválido", telefono: "123456" });
+    assert.equal(response.statusCode, 400);
+    assert.deepEqual(JSON.parse(response.body), { error: "CLIENT_PHONE_INVALID" });
+    const [[after]]: any = await pool.query("SELECT COUNT(*) AS total FROM clientes WHERE local_id = ?", [petLocalId]);
+    assert.equal(after.total, before.total);
+  });
+
+  test("legacy NULL no se vincula por igualdad textual si falta identidad canónica", async () => {
+    const legacyPhone = "1123454321";
+    const [legacy]: any = await pool.query("INSERT INTO clientes (nombre, telefono, local_id) VALUES ('Legacy', ?, ?)", [legacyPhone, petLocalId]);
+    const result = await httpRequest("POST", "/api/pet/admin/responsables", petAdminToken(), { nombre: "No reutilizar", telefono: legacyPhone });
+    assert.equal(result.statusCode, 409);
+    assert.deepEqual(JSON.parse(result.body), { error: "CLIENT_PHONE_CONFLICT" });
+    const [rows]: any = await pool.query("SELECT nombre, telefono_normalizado FROM clientes WHERE id = ? AND local_id = ?", [legacy.insertId, petLocalId]);
+    assert.deepEqual(rows[0], { nombre: "Legacy", telefono_normalizado: null });
+  });
+
+  test("dos responsables concurrentes equivalentes: una identidad y un cliente", { timeout: 30000 }, async t => {
+    const original = pool.query.bind(pool);
+    const phone = "1123454310";
+    let reads = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    t.mock.method(pool, "query", ((...args: Parameters<typeof pool.query>) => {
+      if (String(args[0]).includes("FROM clientes WHERE telefono_normalizado = ? AND local_id = ?") &&
+          Array.isArray(args[1]) && args[1][0] === normalizeClientPhone(phone) && reads < 2) {
+        return original(...args).then(async result => { reads++; if (reads === 2) release(); await barrier; return result; });
+      }
+      return original(...args);
+    }) as typeof pool.query);
+    const responses = await Promise.all([
+      httpRequest("POST", "/api/pet/admin/responsables", petAdminToken(), { nombre: "Primero", telefono: phone }),
+      httpRequest("POST", "/api/pet/admin/responsables", petAdminToken(), { nombre: "Segundo", telefono: "+54 11 2345 4310" }),
+    ]);
+    t.mock.restoreAll();
+    assert.equal(reads, 2);
+    assert.deepEqual(responses.map(result => result.statusCode).sort(), [200, 201]);
+    assert.equal(JSON.parse(responses[0].body).id, JSON.parse(responses[1].body).id);
+    const [[count]]: any = await pool.query("SELECT COUNT(*) AS total FROM clientes WHERE telefono_normalizado = ? AND local_id = ?", [normalizeClientPhone(phone), petLocalId]);
+    assert.equal(count.total, 1);
+  });
+
+  test("MySQL informa nombres distintos para UNIQUE canónica y legacy", async () => {
+    const display = "1123454301";
+    const canonical = normalizeClientPhone(display);
+    await pool.query("INSERT INTO clientes (nombre, telefono, telefono_normalizado, local_id) VALUES ('A', ?, ?, ?)", [display, canonical, petLocalId]);
+    await assert.rejects(
+      pool.query("INSERT INTO clientes (nombre, telefono, telefono_normalizado, local_id) VALUES ('B', ?, ?, ?)", ["+54 11 2345 4301", canonical, petLocalId]),
+      error => clientPhoneDuplicateKey(error) === "canonical",
+    );
+    await assert.rejects(
+      pool.query("INSERT INTO clientes (nombre, telefono, telefono_normalizado, local_id) VALUES ('B', ?, NULL, ?)", [display, petLocalId]),
+      error => clientPhoneDuplicateKey(error) === "legacy",
+    );
   });
 });
 

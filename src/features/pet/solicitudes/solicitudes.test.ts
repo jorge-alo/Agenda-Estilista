@@ -33,7 +33,7 @@ let port: number;
 let server: Server;
 const slugs = [0, 1, 2].map(n => `${prefix}-${n}`);
 
-const body = { responsable: { nombre: " Ana ", telefono: " 123456 " }, mascota: { nombre: " Rocky " } };
+const body = { responsable: { nombre: " Ana ", telefono: " 1123456789 " }, mascota: { nombre: " Rocky " } };
 function token(localId = ids[0], rol = "admin") {
   return jwt.sign({ userId: 1, localId, rol }, jwtSecret);
 }
@@ -104,7 +104,7 @@ test("público: slug PET activo, body mínimo, snapshot y ninguna entidad real",
   assert.deepEqual({ to: senderCalls[0].to, localId: senderCalls[0].localId }, { to: "5491155550000", localId: String(ids[0]) });
   assert.match(senderCalls[0].body, /Responsable: Ana/);
   assert.match(senderCalls[0].body, /Mascota: Rocky/);
-  assert.match(senderCalls[0].body, /Teléfono: 549123456/);
+  assert.match(senderCalls[0].body, /Teléfono: 5491123456789/);
   assert.doesNotMatch(senderCalls[0].body, /null|undefined|telefonoSecundario|localId|estado/i);
 });
 
@@ -124,7 +124,7 @@ test("sin raza ni motivo el mensaje omite campos opcionales", async () => {
   assert.equal(senderCalls.length, 1);
   assert.doesNotMatch(senderCalls[0].body, /Raza:|Motivo:|null|undefined/);
   assert.equal(senderCalls[0].body, [
-    "Nueva solicitud de peluquería canina", "", "Responsable: Ana", "Mascota: Rocky", "Teléfono: 549123456",
+    "Nueva solicitud de peluquería canina", "", "Responsable: Ana", "Mascota: Rocky", "Teléfono: 5491123456789",
   ].join("\n"));
 });
 
@@ -241,7 +241,7 @@ test("admin: filtro estricto, snapshot, orden, estados y tenant", async () => {
   assert.ok(rows.find(row => row.id === r.insertId));
   assert.ok(rows.findIndex(row => row.id === r2.insertId) < rows.findIndex(row => row.id === r.insertId));
   assert.ok(rows.every(row => !("localId" in row)));
-  assert.deepEqual(rows.find(row => row.estado === "NUEVA").responsable, { nombre: "Ana", telefono: "123456", telefonoSecundario: null });
+  assert.deepEqual(rows.find(row => row.estado === "NUEVA").responsable, { nombre: "Ana", telefono: "1123456789", telefonoSecundario: null });
   assert.deepEqual(rows.find(row => row.estado === "NUEVA").mascota, { nombre: "Rocky", raza: null, fechaNacimiento: null, tamano: null, sexo: null });
   for (const estado of ["NUEVA", "CONTACTADA", "CONVERTIDA", "DESCARTADA"]) {
     const filtered = await call("GET", `${admin}?estado=${estado}`, undefined, auth);
@@ -257,7 +257,7 @@ test("admin: filtro estricto, snapshot, orden, estados y tenant", async () => {
 
 test("admin: transiciones permitidas y terminales", async () => {
   const create = async () => {
-    const [r]: any = await pool.query("INSERT INTO solicitudes_pet (local_id, responsable_nombre, responsable_telefono, mascota_nombre) VALUES (?, ?, ?, ?)", [ids[0], prefix, "1", "test"]);
+    const [r]: any = await pool.query("INSERT INTO solicitudes_pet (local_id, responsable_nombre, responsable_telefono, mascota_nombre) VALUES (?, ?, ?, ?)", [ids[0], prefix, "1123456789", "test"]);
     return r.insertId as number;
   };
   const patch = (id: number, estado: string, localId = ids[0]) => call("PATCH", `${admin}/${id}/estado`, { estado }, token(localId));

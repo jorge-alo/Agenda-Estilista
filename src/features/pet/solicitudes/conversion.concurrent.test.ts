@@ -7,9 +7,12 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { pool } from "../../../config/db";
+import { normalizeClientPhone } from "../../../shared/phone/normalizeClientPhone";
 import petRouter from "../pet.routes";
 
 const prefix = `pet10c2-${randomUUID()}`;
+let nextPhone = 3000;
+function testPhone() { return `112345${nextPhone++}`; }
 const secret = "PET10C2_FICTICIO_TEST";
 const fixtureLocales: number[] = [];
 const activeRequests = new Set<Promise<ApiResult>>();
@@ -158,7 +161,7 @@ async function integridad(ids: number[], localId: number, telefono: string, tota
   assert.equal(clientIds.size, 1);
   assert.equal(petIds.size, total);
   const [clients] = await pool.query<(RowDataPacket & { id: number })[]>(
-    "SELECT id FROM clientes WHERE local_id = ? AND telefono = ?", [localId, telefono]);
+    "SELECT id FROM clientes WHERE local_id = ? AND telefono_normalizado = ?", [localId, normalizeClientPhone(telefono)]);
   assert.equal(clients.length, 1);
   assert.ok(clientIds.has(clients[0].id));
   const [pets] = await pool.query<(RowDataPacket & { id: number })[]>(
@@ -199,7 +202,7 @@ function retenerConversion(t: TestContext, firstLocal: number, point: "local" | 
       if (conn.threadId === firstThread) {
         if (isLocal) phases.push("A: local FOR UPDATE");
         if (sql.includes("FROM solicitudes_pet WHERE id = ? AND local_id = ? FOR UPDATE")) phases.push("A: solicitud FOR UPDATE");
-        if (sql.includes("SELECT id FROM clientes WHERE telefono = ? AND local_id = ?")) phases.push("A: SELECT cliente");
+        if (sql.includes("SELECT id FROM clientes WHERE telefono_normalizado = ? AND local_id = ?")) phases.push("A: SELECT cliente");
         if (sql.includes("INSERT INTO clientes")) phases.push("A: INSERT cliente");
         if (sql.includes("INSERT INTO mascotas")) phases.push("A: INSERT mascota");
         if (sql.includes("INSERT INTO mascota_clientes")) phases.push("A: INSERT vínculo");
@@ -286,7 +289,7 @@ after(async () => {
 for (const initial of ["NUEVA", "CONTACTADA"]) {
   test(`misma solicitud ${initial}: segunda conversión espera y no duplica`, { timeout: 30000 }, async t => {
     const tenant = await local();
-    const phone = `tel-${randomUUID()}`;
+    const phone = testPhone();
     const id = await solicitud(tenant, phone, "Mascota declarada", initial);
     const hold = retenerConversion(t, tenant, "solicitud");
     const first = convertir(tenant, id, { mascota: { nombre: "Ganadora A" } });
@@ -315,9 +318,9 @@ for (const initial of ["NUEVA", "CONTACTADA"]) {
 
 test("dos solicitudes del mismo local y teléfono: ambas convierten, B reutiliza", { timeout: 30000 }, async t => {
   const tenant = await local();
-  const phone = `tel-${randomUUID()}`;
+  const phone = testPhone();
   const aId = await solicitud(tenant, phone, "Animal A");
-  const bId = await solicitud(tenant, phone, "Animal B");
+  const bId = await solicitud(tenant, `+54 11 2345 ${phone.slice(-4)}`, "Animal B");
   const hold = retenerConversion(t, tenant, "solicitud");
   const first = convertir(tenant, aId);
   let second: Promise<ApiResult> | undefined;
@@ -339,7 +342,7 @@ test("dos solicitudes del mismo local y teléfono: ambas convierten, B reutiliza
 
 test("conversión primero: DESCARTAR espera la fila y no pisa CONVERTIDA", { timeout: 30000 }, async t => {
   const tenant = await local();
-  const phone = `tel-${randomUUID()}`;
+  const phone = testPhone();
   const id = await solicitud(tenant, phone, "Mascota A");
   const hold = retenerConversion(t, tenant, "solicitud");
   const originalQuery = pool.query.bind(pool);
@@ -365,7 +368,7 @@ test("conversión primero: DESCARTAR espera la fila y no pisa CONVERTIDA", { tim
 
 test("DESCARTAR primero: conversión ve estado terminal aunque PATCH aún no respondió", { timeout: 30000 }, async t => {
   const tenant = await local();
-  const phone = `tel-${randomUUID()}`;
+  const phone = testPhone();
   const id = await solicitud(tenant, phone, "Mascota A", "CONTACTADA");
   const updated = barrier<void>();
   const release = barrier<void>();
@@ -386,7 +389,7 @@ test("DESCARTAR primero: conversión ve estado terminal aunque PATCH aún no res
     "SELECT estado, cliente_id, mascota_id, converted_at FROM solicitudes_pet WHERE id = ?", [id]);
   assert.deepEqual([rows[0].estado, rows[0].cliente_id, rows[0].mascota_id, rows[0].converted_at], ["DESCARTADA", null, null, null]);
   const [counts] = await pool.query<(RowDataPacket & { total: number })[]>(
-    "SELECT COUNT(*) AS total FROM clientes WHERE local_id = ? AND telefono = ?", [tenant, phone]);
+    "SELECT COUNT(*) AS total FROM clientes WHERE local_id = ? AND telefono_normalizado = ?", [tenant, normalizeClientPhone(phone)]);
   assert.equal(counts[0].total, 0);
   const [pets] = await pool.query<(RowDataPacket & { total: number })[]>("SELECT COUNT(*) AS total FROM mascotas WHERE local_id = ?", [tenant]);
   assert.equal(pets[0].total, 0);
@@ -396,7 +399,7 @@ test("DESCARTAR primero: conversión ve estado terminal aunque PATCH aún no res
 
 test("rollback con cliente y mascota intermedios: B espera y convierte sin residuos A", { timeout: 30000 }, async t => {
   const tenant = await local();
-  const phone = `tel-${randomUUID()}`;
+  const phone = testPhone();
   const id = await solicitud(tenant, phone, "Mascota A");
   const hold = retenerConversion(t, tenant, "cliente", true);
   const first = convertir(tenant, id, { mascota: { nombre: "Fallida A" } });
@@ -423,7 +426,7 @@ test("rollback con cliente y mascota intermedios: B espera y convierte sin resid
 test("tenants distintos con mismo teléfono: B termina mientras A aún retiene su local", { timeout: 30000 }, async t => {
   const localA = await local();
   const localB = await local();
-  const phone = `tel-${randomUUID()}`;
+  const phone = testPhone();
   const idA = await solicitud(localA, phone, "Animal A");
   const idB = await solicitud(localB, phone, "Animal B");
   const hold = retenerConversion(t, localA, "local");
@@ -445,9 +448,9 @@ test("tenants distintos con mismo teléfono: B termina mientras A aún retiene s
   await integridad([idB], localB, phone, 1);
 });
 
-test("ruta legacy real: diagnostica la espera y conserva un cliente", { timeout: 70000 }, async t => {
+test("ruta real de responsables PET: espera UNIQUE y reutiliza el cliente ganador", { timeout: 70000 }, async t => {
   const tenant = await local();
-  const phone = `tel-${randomUUID()}`;
+  const phone = testPhone();
   const id = await solicitud(tenant, phone, "Mascota A");
   const hold = retenerConversion(t, tenant, "cliente");
   const original = pool.query.bind(pool);
@@ -455,8 +458,8 @@ test("ruta legacy real: diagnostica la espera y conserva un cliente", { timeout:
   const legacyPhases: string[] = [];
   t.mock.method(pool, "query", ((...args: Parameters<typeof pool.query>) => {
     const sql = String(args[0]);
-    const isLookup = sql.includes("SELECT * FROM clientes WHERE telefono = ? AND local_id = ?");
-    const isInsert = sql.includes("INSERT INTO clientes (nombre, telefono, local_id) VALUES (?, ?, ?)");
+    const isLookup = sql.includes("FROM clientes WHERE telefono_normalizado = ? AND local_id = ?");
+    const isInsert = sql.includes("INSERT INTO clientes (nombre, telefono, telefono_normalizado, local_id) VALUES (?, ?, ?, ?)");
     if (isLookup) legacyPhases.push("legacy: SELECT cliente");
     if (isInsert) { legacyPhases.push("legacy: INSERT cliente"); insertAttempt.resolve(); }
     const query = original(...args);
@@ -494,7 +497,9 @@ test("ruta legacy real: diagnostica la espera y conserva un cliente", { timeout:
   const legacyResult = results[1].value;
   t.diagnostic(JSON.stringify({ fasesConversion: hold.phases(), fasesLegacy: legacyPhases, aTrx, waits, http: [converted.status, legacyResult.status] }));
   assert.equal(converted.status, 201);
-  assert.equal(legacyResult.status, 409, "la ruta legacy actual responde 409 al duplicado");
+  assert.equal(legacyResult.status, 200, "responsables PET relee al ganador tras duplicado");
+  assert.equal(legacyResult.data.isNew, false);
+  assert.equal(legacyResult.data.id, (converted.data as Converted).cliente.id);
   await integridad([id], tenant, phone, 1);
   const [client] = await pool.query<(RowDataPacket & { nombre: string })[]>(
     "SELECT nombre FROM clientes WHERE local_id = ? AND telefono = ?", [tenant, phone]);

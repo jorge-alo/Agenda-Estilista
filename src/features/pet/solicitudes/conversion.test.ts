@@ -6,9 +6,12 @@ import { after, before, beforeEach, test } from "node:test";
 import express from "express";
 import jwt from "jsonwebtoken";
 import { pool } from "../../../config/db";
+import { normalizeClientPhone } from "../../../shared/phone/normalizeClientPhone";
 import petRouter from "../pet.routes";
 
 const prefix = `pet10c1-${randomUUID()}`;
+let nextPhone = 2000;
+function phone() { return `112345${nextPhone++}`; }
 const secret = "PET10C1_FICTICIO_TEST";
 const locales: number[] = [];
 let port: number;
@@ -26,7 +29,7 @@ async function request(method: string, path: string, body?: unknown, auth?: stri
   return { status: response.status, data: await response.json() as Record<string, unknown> };
 }
 const convertir = (id: number | string) => `/api/pet/admin/solicitudes/${id}/convertir`;
-async function solicitud(localId = locales[0], estado = "NUEVA", telefono = `tel-${randomUUID()}`): Promise<number> {
+async function solicitud(localId = locales[0], estado = "NUEVA", telefono = phone()): Promise<number> {
   const [result]: any = await pool.query(
     `INSERT INTO solicitudes_pet (local_id, responsable_nombre, responsable_telefono, responsable_telefono_secundario,
      mascota_nombre, mascota_raza, mascota_fecha_nacimiento, mascota_tamano, mascota_sexo, motivo_contacto, estado)
@@ -36,7 +39,7 @@ async function solicitud(localId = locales[0], estado = "NUEVA", telefono = `tel
   return result.insertId;
 }
 async function crearCliente(localId: number, telefono: string, nombre = "Nombre existente"): Promise<number> {
-  const [result]: any = await pool.query("INSERT INTO clientes (local_id, nombre, telefono) VALUES (?, ?, ?)", [localId, nombre, telefono]);
+  const [result]: any = await pool.query("INSERT INTO clientes (local_id, nombre, telefono, telefono_normalizado) VALUES (?, ?, ?, ?)", [localId, nombre, telefono, normalizeClientPhone(telefono)]);
   return result.insertId;
 }
 async function estado(id: number) {
@@ -138,13 +141,13 @@ test("NUEVA: body vacío usa snapshot, crea ficha sin habilitar y conserva histo
 test("CONTACTADA: overrides parciales y null solo en opcionales de mascota", async () => {
   const id = await solicitud(locales[0], "CONTACTADA");
   const result = await request("POST", convertir(id), {
-    responsable: { nombre: "  Corregido  ", telefono: " 111-222 " },
+    responsable: { nombre: "  Corregido  ", telefono: " 011 15 2345-6790 " },
     mascota: { nombre: " Nuevo nombre ", raza: null, fechaNacimiento: null, tamano: null, sexo: null, tipoPelo: " Rizado ", observaciones: " Revisar el pelo " },
   }, token());
   assert.equal(result.status, 201);
   const data = result.data as { cliente: { id: number }; mascota: { id: number } };
   const [[client]]: any = await pool.query("SELECT nombre, telefono FROM clientes WHERE id = ?", [data.cliente.id]);
-  assert.deepEqual(client, { nombre: "Corregido", telefono: "111-222" });
+  assert.deepEqual(client, { nombre: "Corregido", telefono: "011 15 2345-6790" });
   const [[pet]]: any = await pool.query("SELECT nombre, raza, fecha_nacimiento, tamano, sexo, tipo_pelo, observaciones FROM mascotas WHERE id = ?", [data.mascota.id]);
   assert.deepEqual(pet, { nombre: "Nuevo nombre", raza: null, fecha_nacimiento: null, tamano: null, sexo: null, tipo_pelo: "Rizado", observaciones: "Revisar el pelo" });
   const historic = await estado(id);
@@ -154,19 +157,43 @@ test("CONTACTADA: overrides parciales y null solo en opcionales de mascota", asy
 });
 
 test("cliente existente del mismo tenant se reutiliza sin cambiar nombre; otro tenant no", async () => {
-  const phone = `tel-${randomUUID()}`;
-  const existing = await crearCliente(locales[0], phone);
-  const id = await solicitud(locales[0], "NUEVA", phone);
+  const originalPhone = phone();
+  const existing = await crearCliente(locales[0], originalPhone);
+  const alternate = `+54 11 2345 ${originalPhone.slice(-4)}`;
+  const id = await solicitud(locales[0], "NUEVA", alternate);
   const reused = await request("POST", convertir(id), { responsable: { nombre: "No cambiar" } }, token());
   assert.equal(reused.status, 201);
   assert.deepEqual(reused.data.cliente, { id: existing, reutilizado: true });
-  const [[old]]: any = await pool.query("SELECT nombre FROM clientes WHERE id = ?", [existing]);
-  assert.equal(old.nombre, "Nombre existente");
-  const idOtro = await solicitud(locales[1], "NUEVA", phone);
+  const [[old]]: any = await pool.query("SELECT nombre, telefono, telefono_normalizado FROM clientes WHERE id = ?", [existing]);
+  assert.deepEqual(old, { nombre: "Nombre existente", telefono: originalPhone, telefono_normalizado: normalizeClientPhone(originalPhone) });
+  const idOtro = await solicitud(locales[1], "NUEVA", alternate);
   const fresh = await request("POST", convertir(idOtro), {}, token(locales[1]));
   assert.equal(fresh.status, 201);
   assert.deepEqual(fresh.data.cliente, { id: (fresh.data.cliente as { id: number }).id, reutilizado: false });
   assert.notEqual((fresh.data.cliente as { id: number }).id, existing);
+});
+
+test("teléfono inválido en solicitud convertida responde 400 sin cliente ni mascota", async () => {
+  const id = await solicitud(locales[0], "NUEVA", "123456");
+  const before = await cantidades(locales[0]);
+  assert.deepEqual(await request("POST", convertir(id), {}, token()), { status: 400, data: { error: "CLIENT_PHONE_INVALID" } });
+  assert.deepEqual(await cantidades(locales[0]), before);
+  const row = await estado(id);
+  assert.equal(row.estado, "NUEVA");
+  assert.equal(row.cliente_id, null);
+  assert.equal(row.mascota_id, null);
+});
+
+test("cliente legacy válido con canonical NULL no se recupera por igualdad display", async () => {
+  const legacyPhone = phone();
+  const [legacy]: any = await pool.query("INSERT INTO clientes (nombre, telefono, local_id) VALUES ('Legacy', ?, ?)", [legacyPhone, locales[0]]);
+  const id = await solicitud(locales[0], "NUEVA", legacyPhone);
+  const before = await cantidades(locales[0]);
+  assert.deepEqual(await request("POST", convertir(id), {}, token()), { status: 409, data: { error: "CLIENT_PHONE_CONFLICT" } });
+  assert.deepEqual(await cantidades(locales[0]), before);
+  assert.equal((await estado(id)).estado, "NUEVA");
+  const [[existing]]: any = await pool.query("SELECT telefono_normalizado FROM clientes WHERE id=? AND local_id=?", [legacy.insertId, locales[0]]);
+  assert.equal(existing.telefono_normalizado, null);
 });
 
 test("DESCARTADA y CONVERTIDA son terminales", async () => {
@@ -197,15 +224,15 @@ test("validación estricta de overrides: no crea entidades y no cambia estado", 
 });
 
 test("colisión UNIQUE legacy: relee al cliente ganador sin sobrescribirlo", async t => {
-  const phone = `tel-${randomUUID()}`;
-  const existing = await crearCliente(locales[0], phone);
-  const id = await solicitud(locales[0], "NUEVA", phone);
+  const currentPhone = phone();
+  const existing = await crearCliente(locales[0], currentPhone);
+  const id = await solicitud(locales[0], "NUEVA", currentPhone);
   const originalGetConnection = pool.getConnection.bind(pool);
   t.mock.method(pool, "getConnection", async () => {
     const conn = await originalGetConnection();
     const originalQuery = conn.query.bind(conn);
     t.mock.method(conn, "query", async (...args: Parameters<typeof conn.query>) => {
-      if (String(args[0]) === "SELECT id FROM clientes WHERE telefono = ? AND local_id = ?") return [[], []];
+      if (String(args[0]) === "SELECT id FROM clientes WHERE telefono_normalizado = ? AND local_id = ?") return [[], []];
       return originalQuery(...args);
     });
     return conn;
@@ -214,7 +241,7 @@ test("colisión UNIQUE legacy: relee al cliente ganador sin sobrescribirlo", asy
   t.mock.restoreAll();
   assert.equal(result.status, 201);
   assert.deepEqual(result.data.cliente, { id: existing, reutilizado: true });
-  const [[n]]: any = await pool.query("SELECT COUNT(*) AS total FROM clientes WHERE local_id = ? AND telefono = ?", [locales[0], phone]);
+  const [[n]]: any = await pool.query("SELECT COUNT(*) AS total FROM clientes WHERE local_id = ? AND telefono_normalizado = ?", [locales[0], normalizeClientPhone(currentPhone)]);
   assert.equal(n.total, 1);
 });
 
@@ -265,15 +292,15 @@ test("locks funcionales: local antes de primera lectura bloqueante de solicitud"
   t.mock.restoreAll();
   const lockLocal = queries.findIndex(query => query.includes("FROM locales WHERE id = ? FOR UPDATE"));
   const lockSolicitud = queries.findIndex(query => query.includes("FROM solicitudes_pet WHERE id = ? AND local_id = ? FOR UPDATE"));
-  const selectCliente = queries.findIndex(query => query.includes("FROM clientes WHERE telefono = ? AND local_id = ?"));
+  const selectCliente = queries.findIndex(query => query.includes("FROM clientes WHERE telefono_normalizado = ? AND local_id = ?"));
   assert.ok(lockLocal >= 0 && lockLocal < lockSolicitud && lockSolicitud < selectCliente);
   assert.equal(queries.filter(query => query.includes("FROM solicitudes_pet")).length, 1);
 });
 
 test("CHECK y FKs: estados, referencias tenant-safe y RESTRICT", async () => {
   const id = await solicitud();
-  const ownClient = await crearCliente(locales[0], `tel-${randomUUID()}`);
-  const otherClient = await crearCliente(locales[1], `tel-${randomUUID()}`);
+  const ownClient = await crearCliente(locales[0], phone());
+  const otherClient = await crearCliente(locales[1], phone());
   const [pet]: any = await pool.query("INSERT INTO mascotas (local_id, nombre) VALUES (?, 'Perro FK')", [locales[0]]);
   const [otherPet]: any = await pool.query("INSERT INTO mascotas (local_id, nombre) VALUES (?, 'Perro ajeno FK')", [locales[1]]);
   assert.ok(pet.insertId && otherPet.insertId);

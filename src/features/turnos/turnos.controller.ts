@@ -1,5 +1,7 @@
 import { Request, Response } from "express";
 import * as turnoService from "./turnos.service";
+import { InvalidClientPhoneError } from "../../shared/phone/normalizeClientPhone";
+import { ClientPhoneConflictError } from "../../shared/phone/clientPhoneDuplicate";
 export interface AuthRequest extends Request {
   user?: {
     userId: number;
@@ -20,6 +22,8 @@ export const create = async (req: AuthRequest, res: Response) => {
 
     res.json({ message: "Turno creado", turnoId });
   } catch (error: any) {
+    if (error instanceof InvalidClientPhoneError) return res.status(400).json({ error: error.code });
+    if (error instanceof ClientPhoneConflictError) return res.status(409).json({ error: error.code });
     if (error.message === "Ese horario ya está ocupado") {
       return res.status(400).json({ error: error.message });
     }

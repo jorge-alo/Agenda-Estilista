@@ -3,8 +3,12 @@ import { AuthRequest } from "../../../middlewares/auth.middleware";
 import * as service from "./solicitudes.service";
 import { notificarNuevaSolicitud } from "./solicitudes.notification";
 import { SolicitudError, validarCambio, validarCrear, validarFiltro, validarId } from "./solicitudes.types";
+import { InvalidClientPhoneError } from "../../../shared/phone/normalizeClientPhone";
+import { ClientPhoneConflictError } from "../../../shared/phone/clientPhoneDuplicate";
 
 function errorResponse(error: unknown, res: Response): Response {
+  if (error instanceof InvalidClientPhoneError) return res.status(400).json({ error: error.code });
+  if (error instanceof ClientPhoneConflictError) return res.status(409).json({ error: error.code });
   if (error instanceof SolicitudError) return res.status(error.status).json({ error: error.code });
   return res.status(500).json({ error: "Error procesando solicitud PET" });
 }

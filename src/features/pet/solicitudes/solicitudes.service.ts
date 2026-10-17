@@ -2,6 +2,8 @@ import { pool } from "../../../config/db";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { CrearSolicitud, EstadoSolicitud, SolicitudError } from "./solicitudes.types";
 import { SolicitudSnapshot, validarConversion } from "./conversion.types";
+import { normalizeClientPhone } from "../../../shared/phone/normalizeClientPhone";
+import { ClientPhoneConflictError, clientPhoneDuplicateKey } from "../../../shared/phone/clientPhoneDuplicate";
 
 interface SolicitudRow extends RowDataPacket {
   id: number;
@@ -130,10 +132,11 @@ export async function convertir(localId: number, id: number, body: unknown) {
       throw new SolicitudError(409, "PET_SOLICITUD_NOT_CONVERTIBLE");
     }
     const ficha = validarConversion(body, solicitud);
+    const canonical = normalizeClientPhone(ficha.responsable.telefono);
 
     const [clientes] = await connection.query<ClienteIdRow[]>(
-      "SELECT id FROM clientes WHERE telefono = ? AND local_id = ?",
-      [ficha.responsable.telefono, localId]
+      "SELECT id FROM clientes WHERE telefono_normalizado = ? AND local_id = ?",
+      [canonical, localId]
     );
     let clienteId: number;
     let reutilizado = clientes.length > 0;
@@ -142,19 +145,19 @@ export async function convertir(localId: number, id: number, body: unknown) {
     } else {
       try {
         const [insert] = await connection.query<ResultSetHeader>(
-          "INSERT INTO clientes (nombre, telefono, local_id) VALUES (?, ?, ?)",
-          [ficha.responsable.nombre, ficha.responsable.telefono, localId]
+          "INSERT INTO clientes (nombre, telefono, telefono_normalizado, local_id) VALUES (?, ?, ?, ?)",
+          [ficha.responsable.nombre, ficha.responsable.telefono.trim(), canonical, localId]
         );
         clienteId = insert.insertId;
       } catch (error: unknown) {
-        const duplicate = error as { code?: string; sqlMessage?: string };
-        if (duplicate.code !== "ER_DUP_ENTRY" || !duplicate.sqlMessage?.includes("unique_cliente_local")) throw error;
-        // Un escritor legacy pudo insertar el mismo teléfono fuera del lock de locales.
+        const key = clientPhoneDuplicateKey(error);
+        if (!key) throw error;
+        // Un escritor externo puede ganar la UNIQUE canónica o la legacy.
         const [ganador] = await connection.query<ClienteIdRow[]>(
-          "SELECT id FROM clientes WHERE telefono = ? AND local_id = ? FOR UPDATE",
-          [ficha.responsable.telefono, localId]
+          "SELECT id FROM clientes WHERE telefono_normalizado = ? AND local_id = ? FOR UPDATE",
+          [canonical, localId]
         );
-        if (!ganador.length) throw new Error("Cliente no encontrado tras colisión UNIQUE");
+        if (!ganador.length) throw new ClientPhoneConflictError();
         clienteId = ganador[0].id;
         reutilizado = true;
       }

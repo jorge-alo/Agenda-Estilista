@@ -7,6 +7,8 @@ import {
   CrearResponsablePayload,
 } from "./mascotas.types";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
+import { normalizeClientPhone } from "../../../shared/phone/normalizeClientPhone";
+import { ClientPhoneConflictError, clientPhoneDuplicateKey } from "../../../shared/phone/clientPhoneDuplicate";
 
 export interface Mascota {
   id: number;
@@ -234,23 +236,39 @@ export const editarReservaOnline = async (
 };
 
 export const crearResponsable = async (localId: number, payload: CrearResponsablePayload): Promise<{ id: number; nombre: string; telefono: string; local_id: number; created_at: string; isNew: boolean }> => {
+  const canonical = normalizeClientPhone(payload.telefono);
+  const display = payload.telefono.trim();
   const [existing]: any = await pool.query(
-    `SELECT * FROM clientes WHERE telefono = ? AND local_id = ?`,
-    [payload.telefono, localId]
+    `SELECT id, nombre, telefono, local_id, created_at FROM clientes WHERE telefono_normalizado = ? AND local_id = ?`,
+    [canonical, localId]
   );
 
   if (existing.length > 0) {
     return { ...existing[0], isNew: false };
   }
 
-  const [result]: any = await pool.query(
-    `INSERT INTO clientes (nombre, telefono, local_id) VALUES (?, ?, ?)`,
-    [payload.nombre, payload.telefono, localId]
-  );
+  let id: number;
+  try {
+    const [result]: any = await pool.query(
+      `INSERT INTO clientes (nombre, telefono, telefono_normalizado, local_id) VALUES (?, ?, ?, ?)`,
+      [payload.nombre, display, canonical, localId]
+    );
+    id = result.insertId;
+  } catch (error) {
+    const key = clientPhoneDuplicateKey(error);
+    if (!key) throw error;
+    const [winner]: any = await pool.query(
+      `SELECT id, nombre, telefono, local_id, created_at FROM clientes
+       WHERE telefono_normalizado = ? AND local_id = ?`,
+      [canonical, localId]
+    );
+    if (!winner.length) throw new ClientPhoneConflictError();
+    return { ...winner[0], isNew: false };
+  }
 
   const [rows]: any = await pool.query(
-    `SELECT * FROM clientes WHERE id = ? AND local_id = ?`,
-    [result.insertId, localId]
+    `SELECT id, nombre, telefono, local_id, created_at FROM clientes WHERE id = ? AND local_id = ?`,
+    [id, localId]
   );
 
   return { ...rows[0], isNew: true };
