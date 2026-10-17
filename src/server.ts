@@ -19,6 +19,7 @@ import pagosRouter from "./features/pagos/pagos.route";
 import suscripcionRouter from "./features/suscripcion/suscripcion.routes";
 import petRouter from "./features/pet/pet.routes";
 import { solicitudesPublicRouter } from "./features/pet/solicitudes/solicitudes.routes";
+import publicLocalRouter from "./features/publicLocal/publicLocal.routes";
 
 if (!process.env.JWT_SECRET) {
   console.error("❌ FALTA JWT_SECRET en variables de entorno");
@@ -63,6 +64,7 @@ app.use("/api/auth", AuthRouter);
 app.use("/api/estilistas", EstilistasRouter);
 app.use("/api/turnos", TurnosRouter);
 app.use("/api/public", PublicRouter);
+app.use("/api/public/local", publicLocalRouter);
 app.use("/api/servicios", ServiciosRouter);
 app.use("/api/horarios", HorariosRouter);
 app.use("/api/superAdmin", routerSuperAdmin);
