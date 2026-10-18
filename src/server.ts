@@ -20,6 +20,7 @@ import suscripcionRouter from "./features/suscripcion/suscripcion.routes";
 import petRouter from "./features/pet/pet.routes";
 import { solicitudesPublicRouter } from "./features/pet/solicitudes/solicitudes.routes";
 import publicLocalRouter from "./features/publicLocal/publicLocal.routes";
+import { sanitizedErrorMiddleware } from "./middlewares/sanitizedError.middleware";
 
 if (!process.env.JWT_SECRET) {
   console.error("❌ FALTA JWT_SECRET en variables de entorno");
@@ -77,6 +78,9 @@ app.use("/api/pagos", pagosRouter);
 app.use('/api/suscripcion', suscripcionRouter); 
 app.use("/api/pet/admin", petRouter);
 app.use("/api/pet/public", solicitudesPublicRouter);
+
+// Keep Express' default 404 behavior; sanitize only errors passed through next(err).
+app.use(sanitizedErrorMiddleware);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
