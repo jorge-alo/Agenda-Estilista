@@ -8,12 +8,16 @@ import {
   type RespuestaDisponibilidadPet,
 } from "../disponibilidad/disponibilidad.service";
 import { autorizarMascota } from "./publicBooking.authorization";
+import { PetSessionRequestError, type PetSessionContext } from "../session/session.types";
+import { crearTurnoPetDesdeSesion } from "../turnos/turnos.service";
+import { TurnoPetError, type SeleccionCreacionTurnoPet } from "../turnos/turnos.types";
 import {
   PublicBookingError,
   duracionPublica,
   type OpcionesReserva,
   type OpcionesReservaExtra,
   type OpcionesReservaServicio,
+  type TurnoPublicoCreado,
 } from "./publicBooking.types";
 
 interface ServicioRow extends RowDataPacket {
@@ -78,22 +82,35 @@ export async function obtenerOpcionesReserva(localId: number, clienteId: number,
  * translated; integrity errors, RangeError and anything unrecognized are
  * rethrown into the sanitized 500 pipeline. Empty slots are a valid answer.
  */
-const MAPEO_DISPONIBILIDAD: Record<string, { status: number; code: string }> = {
-  PET_MASCOTA_NOT_FOUND: { status: 404, code: "PET_MASCOTA_UNAVAILABLE" },
-  PET_MASCOTA_INACTIVA: { status: 404, code: "PET_MASCOTA_UNAVAILABLE" },
-  PET_SERVICIO_NOT_FOUND: { status: 404, code: "PET_SERVICE_UNAVAILABLE" },
-  PET_SERVICIO_INACTIVO: { status: 404, code: "PET_SERVICE_UNAVAILABLE" },
-  PET_SERVICIO_NO_ASOCIADO: { status: 404, code: "PET_SERVICE_UNAVAILABLE" },
-  PET_EXTRA_NOT_FOUND: { status: 404, code: "PET_EXTRA_UNAVAILABLE" },
-  PET_EXTRA_INACTIVO: { status: 404, code: "PET_EXTRA_UNAVAILABLE" },
-  PET_EXTRA_NO_ASOCIADO: { status: 404, code: "PET_EXTRA_UNAVAILABLE" },
-  PET_HIGH_DEMAND_SETTINGS_REQUIRED: { status: 409, code: "PET_BOOKING_UNAVAILABLE" },
-};
-
-function mapearErrorDisponibilidad(error: unknown): never {
-  if (error instanceof DisponibilidadPetError) {
-    const mapped = MAPEO_DISPONIBILIDAD[error.code];
-    if (mapped) throw new PublicBookingError(mapped.status, mapped.code, error.message);
+function mapearErrorPublicBooking(error: unknown): never {
+  if ((error instanceof DisponibilidadPetError || error instanceof TurnoPetError
+    || error instanceof PetSessionRequestError) && error.status < 500) {
+    switch (error.code) {
+      case "PET_SESSION_INVALID":
+      case "PET_LOCAL_NOT_FOUND":
+      case "PET_LOCAL_REQUIRED":
+      case "PET_CLIENTE_NOT_FOUND":
+        throw new PublicBookingError(401, "PET_SESSION_INVALID", "Sesión inválida");
+      case "PET_MASCOTA_NOT_FOUND":
+      case "PET_MASCOTA_INACTIVA":
+      case "PET_MASCOTA_ONLINE_DISABLED":
+      case "PET_RESPONSABLE_NO_ASOCIADO":
+        throw new PublicBookingError(404, "PET_MASCOTA_UNAVAILABLE", "Mascota no disponible");
+      case "PET_SERVICIO_NOT_FOUND":
+      case "PET_SERVICIO_INACTIVO":
+      case "PET_SERVICIO_NO_ASOCIADO":
+        throw new PublicBookingError(404, "PET_SERVICE_UNAVAILABLE", "Servicio no disponible");
+      case "PET_EXTRA_NOT_FOUND":
+      case "PET_EXTRA_INACTIVO":
+      case "PET_EXTRA_NO_ASOCIADO":
+        throw new PublicBookingError(404, "PET_EXTRA_UNAVAILABLE", "Extra no disponible");
+      case "PET_SLOT_UNAVAILABLE":
+        throw new PublicBookingError(409, "PET_SLOT_UNAVAILABLE", "Horario no disponible");
+      case "PET_HIGH_DEMAND_SETTINGS_REQUIRED":
+        throw new PublicBookingError(409, "PET_BOOKING_UNAVAILABLE", "Reserva no disponible");
+      default:
+        throw error;
+    }
   }
   throw error;
 }
@@ -118,6 +135,21 @@ export async function obtenerDisponibilidadPublica(
       slots: formatearSlots(resultado.slots),
     };
   } catch (error: unknown) {
-    mapearErrorDisponibilidad(error);
+    mapearErrorPublicBooking(error);
+  }
+}
+
+/** No idempotency record: a retry after a lost 201 may instead receive a slot conflict. */
+export async function crearReservaPublica(
+  context: PetSessionContext,
+  slugEsperado: string,
+  seleccion: SeleccionCreacionTurnoPet,
+): Promise<TurnoPublicoCreado> {
+  try {
+    const turno = await crearTurnoPetDesdeSesion(context, slugEsperado, seleccion);
+    // Explicit projection; the shared ADMIN result also carries internal IDs.
+    return { id: turno.id, fecha: turno.fecha, hora: turno.hora, horaFin: turno.horaFin, estado: turno.estado };
+  } catch (error: unknown) {
+    mapearErrorPublicBooking(error);
   }
 }

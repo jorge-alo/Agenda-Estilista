@@ -2,11 +2,15 @@ import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { pool } from "../../../config/db";
 import { calcularDuracionTotal, horaAMinutos, minutosAHora } from "../disponibilidad/disponibilidad.engine";
 import { formatearSlots, obtenerSettingsHighDemand, prepararDisponibilidad, prepararSlotsPorContexto } from "../disponibilidad/disponibilidad.service";
-import { TurnoPetError, type ConsultaListadoTurnosPet, type CrearTurnoPetPayload, type ReprogramarTurnoPetPayload, type TurnoPetAdminListado, type TurnoPetCreado, type TurnoPetReprogramado } from "./turnos.types";
+import { TurnoPetError, type ConsultaListadoTurnosPet, type CrearTurnoPetPayload, type ReprogramarTurnoPetPayload, type SeleccionCreacionTurnoPet, type TurnoPetAdminListado, type TurnoPetCreado, type TurnoPetReprogramado } from "./turnos.types";
+import { bloquearSesionParaReserva, comprobarVigenciaSesion } from "../session/session.authorization";
+import { PetSessionRequestError, type PetSessionContext } from "../session/session.types";
+import { bloquearConfiguracionCreacion } from "./turnos.creation-locks";
 
 interface LocalRow extends RowDataPacket { business_type: string }
+interface LocalCreacionRow extends LocalRow { activo?: number; slug?: string }
 interface ClienteRow extends RowDataPacket { nombre: string; telefono: string }
-interface MascotaRow extends RowDataPacket { activo: number }
+interface MascotaRow extends RowDataPacket { activo: number; reserva_online_habilitada?: number }
 interface TurnoPetSnapshotRow extends RowDataPacket {
   id: number;
   fecha: string;
@@ -50,40 +54,75 @@ interface TurnoDisponibilidadReprogramarRow extends RowDataPacket {
 }
 
 export async function crearTurnoPet(localId: number, data: CrearTurnoPetPayload): Promise<TurnoPetCreado> {
+  const { clienteId, ...seleccion } = data;
+  return crearTurnoPetTransaccional({ tipo: "ADMIN", localId, clienteId }, seleccion);
+}
+
+export async function crearTurnoPetDesdeSesion(
+  session: PetSessionContext,
+  slugEsperado: string,
+  seleccion: SeleccionCreacionTurnoPet,
+): Promise<TurnoPetCreado> {
+  return crearTurnoPetTransaccional({ tipo: "PUBLIC", session, slugEsperado }, seleccion);
+}
+
+type AutoridadCreacion =
+  | { tipo: "ADMIN"; localId: number; clienteId: number }
+  | { tipo: "PUBLIC"; session: PetSessionContext; slugEsperado: string };
+
+async function crearTurnoPetTransaccional(autoridad: AutoridadCreacion, data: SeleccionCreacionTurnoPet): Promise<TurnoPetCreado> {
+  const session = autoridad.tipo === "PUBLIC" ? autoridad.session : null;
+  const localId = autoridad.tipo === "PUBLIC" ? autoridad.session.localId : autoridad.localId;
+  const clienteId = autoridad.tipo === "PUBLIC" ? autoridad.session.clienteId : autoridad.clienteId;
+  const lockingRead = session ? " FOR SHARE" : "";
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
     // Lock even when there are no turns: all PET reservations of this local serialize here.
-    const [locales] = await connection.query<LocalRow[]>(
-      "SELECT id, business_type FROM locales WHERE id = ? FOR UPDATE", [localId],
+    const [locales] = await connection.query<LocalCreacionRow[]>(
+      session
+        ? "SELECT id, business_type, activo, slug FROM locales WHERE id = ? FOR UPDATE"
+        : "SELECT id, business_type FROM locales WHERE id = ? FOR UPDATE", [localId],
     );
+    if (autoridad.tipo === "PUBLIC" && (!locales.length || locales[0].activo !== 1
+      || locales[0].business_type !== "PET_GROOMING" || locales[0].slug !== autoridad.slugEsperado)) {
+      throw new PetSessionRequestError(401, "PET_SESSION_INVALID");
+    }
     if (!locales.length) throw new TurnoPetError(404, "PET_LOCAL_NOT_FOUND", "Local no encontrado");
     if (locales[0].business_type !== "PET_GROOMING") {
       throw new TurnoPetError(403, "PET_LOCAL_REQUIRED", "Funcionalidad solo para PET_GROOMING");
     }
 
+    if (session) await bloquearSesionParaReserva(connection, session);
+
     const [mascotas] = await connection.query<MascotaRow[]>(
-      "SELECT activo FROM mascotas WHERE id = ? AND local_id = ?",
+      session
+        ? "SELECT activo, reserva_online_habilitada FROM mascotas WHERE id = ? AND local_id = ? FOR SHARE"
+        : "SELECT activo FROM mascotas WHERE id = ? AND local_id = ?",
       [data.mascotaId, localId],
     );
     if (!mascotas.length) throw new TurnoPetError(404, "PET_MASCOTA_NOT_FOUND", "Mascota no encontrada");
     if (mascotas[0].activo !== 1) {
       throw new TurnoPetError(409, "PET_MASCOTA_INACTIVA", "La mascota no está activa para nuevas reservas");
     }
+    if (session && mascotas[0].reserva_online_habilitada !== 1) {
+      throw new TurnoPetError(404, "PET_MASCOTA_ONLINE_DISABLED", "Mascota no disponible para reserva online");
+    }
 
     const [clientes] = await connection.query<ClienteRow[]>(
-      "SELECT nombre, telefono FROM clientes WHERE id = ? AND local_id = ?",
-      [data.clienteId, localId],
+      `SELECT nombre, telefono FROM clientes WHERE id = ? AND local_id = ?${lockingRead}`,
+      [clienteId, localId],
     );
     if (!clientes.length) throw new TurnoPetError(404, "PET_CLIENTE_NOT_FOUND", "Responsable no encontrado");
     const [relaciones] = await connection.query<RowDataPacket[]>(
       `SELECT cliente_id FROM mascota_clientes
-       WHERE mascota_id = ? AND cliente_id = ? AND local_id = ?`,
-      [data.mascotaId, data.clienteId, localId],
+        WHERE mascota_id = ? AND cliente_id = ? AND local_id = ?${lockingRead}`,
+      [data.mascotaId, clienteId, localId],
     );
     if (!relaciones.length) {
       throw new TurnoPetError(409, "PET_RESPONSABLE_NO_ASOCIADO", "Responsable no asociado a la mascota");
     }
+    if (session) await bloquearConfiguracionCreacion(connection, localId, data);
     const context = await prepararDisponibilidad(connection, localId, data, { lockSettings: true });
 
     const slot = context.slots.find(candidate => candidate.startMinutes === horaAMinutos(data.hora));
@@ -96,7 +135,7 @@ export async function crearTurnoPet(localId: number, data: CrearTurnoPetPayload)
         cliente_nombre, cliente_telefono, servicio_id, servicio_nombre_snapshot,
         duracion_servicio_snapshot, alta_exigencia_snapshot, estado, pago_id
       ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'activo', NULL)`,
-      [localId, data.fecha, data.hora, horaFin, data.mascotaId, data.clienteId,
+      [localId, data.fecha, data.hora, horaFin, data.mascotaId, clienteId,
         clientes[0].nombre, clientes[0].telefono, data.servicioId,
         context.servicioNombre, context.duracionServicio, context.altaExigencia],
     );
@@ -107,10 +146,11 @@ export async function crearTurnoPet(localId: number, data: CrearTurnoPetPayload)
         [turno.insertId, extra.id, extra.nombre, extra.duracionMinutos],
       );
     }
+    if (session) await comprobarVigenciaSesion(connection, session);
     await connection.commit();
     return {
       id: turno.insertId, fecha: data.fecha, hora: data.hora, horaFin, estado: "activo",
-      mascotaId: data.mascotaId, clienteId: data.clienteId, servicioId: data.servicioId,
+      mascotaId: data.mascotaId, clienteId, servicioId: data.servicioId,
     };
   } catch (error: unknown) {
     await connection.rollback();

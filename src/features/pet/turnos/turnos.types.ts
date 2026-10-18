@@ -10,6 +10,9 @@ export interface CrearTurnoPetPayload {
   hora: string;
 }
 
+/** Selection carries no tenant/customer authority; callers supply that separately. */
+export type SeleccionCreacionTurnoPet = Omit<CrearTurnoPetPayload, "clienteId">;
+
 export interface TurnoPetCreado {
   id: number;
   fecha: string;
