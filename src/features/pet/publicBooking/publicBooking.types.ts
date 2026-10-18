@@ -1,4 +1,9 @@
+import { fechaPetValida } from "../disponibilidad/disponibilidad.types";
+import type { ConsultaDisponibilidadPet } from "../disponibilidad/disponibilidad.service";
+
 const INT_MAX = 2147483647;
+const MAX_EXTRAS = 100;
+const CAMPOS_DISPONIBILIDAD = ["mascotaId", "servicioId", "extraIds", "fecha"];
 
 export class PublicBookingError extends Error {
   constructor(public readonly status: number, public readonly code: string, message: string) {
@@ -40,4 +45,33 @@ export interface OpcionesReservaExtra {
 export interface OpcionesReserva {
   servicios: OpcionesReservaServicio[];
   extras: OpcionesReservaExtra[];
+}
+
+function idBody(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= INT_MAX;
+}
+
+/**
+ * Exact public body: mascotaId, servicioId, extraIds (mandatory, even empty) and fecha.
+ * Any extra/missing key, invalid id, more than MAX_EXTRAS ids or duplicate ids is
+ * rejected with the same 400. extraIds is normalized ascending without changing meaning.
+ */
+export function validarConsultaDisponibilidadPublica(body: unknown): ConsultaDisponibilidadPet {
+  const fail = () => new PublicBookingError(400, "PET_BOOKING_INVALID", "Consulta de disponibilidad inválida");
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw fail();
+  const raw = body as Record<string, unknown>;
+  const keys = Object.keys(raw);
+  if (keys.length !== CAMPOS_DISPONIBILIDAD.length
+    || CAMPOS_DISPONIBILIDAD.some(key => !Object.prototype.hasOwnProperty.call(raw, key))
+    || keys.some(key => !CAMPOS_DISPONIBILIDAD.includes(key))) throw fail();
+  if (!idBody(raw.mascotaId) || !idBody(raw.servicioId)) throw fail();
+  if (!Array.isArray(raw.extraIds) || raw.extraIds.length > MAX_EXTRAS || !raw.extraIds.every(idBody)) throw fail();
+  if (new Set(raw.extraIds).size !== raw.extraIds.length) throw fail();
+  if (!fechaPetValida(raw.fecha)) throw fail();
+  return {
+    mascotaId: raw.mascotaId,
+    servicioId: raw.servicioId,
+    extraIds: [...raw.extraIds].sort((a: number, b: number) => a - b),
+    fecha: raw.fecha,
+  };
 }
