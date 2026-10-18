@@ -3,6 +3,7 @@ import type {
   AvailableInterval,
   CalculateAvailabilityInput,
   HighDemandInput,
+  HighDemandInterval,
   HighDemandSettings,
   MinuteInterval,
 } from "./disponibilidad.types";
@@ -54,6 +55,10 @@ function validarHighDemand(highDemand: HighDemandInput | undefined): void {
   if (highDemand.settings.rule === "MIN_GAP") {
     for (const interval of highDemand.intervals ?? []) {
       validarIntervalo(interval, "highDemand.intervals[]");
+      const dayOffset = interval.dayOffset ?? 0;
+      if (!Number.isSafeInteger(dayOffset)) {
+        throw new RangeError("highDemand.intervals[].dayOffset debe ser un entero seguro");
+      }
     }
     return;
   }
@@ -128,15 +133,23 @@ function validarBloque(block: AvailabilityBlock, index: number): void {
   validarIntervalo(block, `blocks[${index}]`);
 }
 
-function candidatoCumpleMinGap(candidate: MinuteInterval, intervals: readonly MinuteInterval[], gap: number): boolean {
+/**
+ * Existing high-demand intervals live on an absolute day axis. The candidate sits on
+ * day 0, so every neighbor is shifted by `dayOffset * MINUTES_PER_DAY`; intra-day
+ * intervals keep `dayOffset = 0` and behave exactly as before.
+ */
+function candidatoCumpleMinGap(candidate: MinuteInterval, intervals: readonly HighDemandInterval[], gap: number): boolean {
   let previousEnd: number | null = null;
   let nextStart: number | null = null;
 
   for (const interval of intervals) {
-    if (interval.endMinutes <= candidate.startMinutes) {
-      previousEnd = previousEnd === null ? interval.endMinutes : Math.max(previousEnd, interval.endMinutes);
-    } else if (interval.startMinutes >= candidate.endMinutes) {
-      nextStart = nextStart === null ? interval.startMinutes : Math.min(nextStart, interval.startMinutes);
+    const offset = (interval.dayOffset ?? 0) * MINUTES_PER_DAY;
+    const absoluteStart = offset + interval.startMinutes;
+    const absoluteEnd = offset + interval.endMinutes;
+    if (absoluteEnd <= candidate.startMinutes) {
+      previousEnd = previousEnd === null ? absoluteEnd : Math.max(previousEnd, absoluteEnd);
+    } else if (absoluteStart >= candidate.endMinutes) {
+      nextStart = nextStart === null ? absoluteStart : Math.min(nextStart, absoluteStart);
     } else {
       // An existing high-demand interval intersects the candidate.
       return false;

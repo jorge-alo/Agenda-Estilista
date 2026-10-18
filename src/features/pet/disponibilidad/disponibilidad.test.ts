@@ -17,7 +17,7 @@ import {
   minutosAHora,
 } from "./disponibilidad.engine";
 import { contextoTemporalArgentina } from "./disponibilidad.service";
-import type { CalculateAvailabilityInput, MinuteInterval } from "./disponibilidad.types";
+import type { CalculateAvailabilityInput, HighDemandInterval, MinuteInterval } from "./disponibilidad.types";
 
 const ventana = (startMinutes: number, endMinutes: number): MinuteInterval => ({ startMinutes, endMinutes });
 const starts = (intervals: MinuteInterval[]) => intervals.map(interval => interval.startMinutes);
@@ -180,7 +180,7 @@ describe("PET-07B motor puro de disponibilidad", () => {
 
   describe("MIN_GAP", () => {
     const settings = { rule: "MIN_GAP" as const, gapMinutes: 60 };
-    const highDemand = (intervals: MinuteInterval[]) => ({ isHighDemand: true, settings, intervals });
+    const highDemand = (intervals: HighDemandInterval[]) => ({ isHighDemand: true, settings, intervals });
 
     it("aplica el gap desde el final del vecino anterior, con igualdad incluida", () => {
       const result = calculate({
@@ -220,6 +220,65 @@ describe("PET-07B motor puro de disponibilidad", () => {
     it("mascota normal ignora MIN_GAP y alta exigencia sin settings falla explícitamente", () => {
       assert.deepEqual(calculate({ highDemand: { isHighDemand: false, settings: null } }).length, 7);
       assert.throws(() => calculate({ highDemand: { isHighDemand: true, settings: null } }), /Faltan settings/);
+    });
+
+    it("normaliza dayOffset ausente y cero como el mismo eje intradía", () => {
+      const sinOffset = calculate({ highDemand: highDemand([ventana(480, 540)]) });
+      const conOffsetCero = calculate({ highDemand: highDemand([{ ...ventana(480, 540), dayOffset: 0 }]) });
+      assert.deepEqual(starts(sinOffset), starts(conOffsetCero));
+    });
+
+    it("aplica el gap interfecha desde el vecino anterior con dayOffset negativo", () => {
+      const cincoHoras = { isHighDemand: true as const, settings: { rule: "MIN_GAP" as const, gapMinutes: 300 } };
+      const result = calcularSlotsDisponibles({
+        schedules: [ventana(0, 120)],
+        blocks: [],
+        durationMinutes: 30,
+        highDemand: { ...cincoHoras, intervals: [{ ...ventana(18 * 60, 19 * 60 + 30), dayOffset: -1 }] },
+      });
+      // D 19:30 + 5h = D+1 00:30 (absoluto -1440 + 1170 + 300 = 30).
+      assert.deepEqual(starts(result), [30, 60, 90]);
+    });
+
+    it("acepta la igualdad exacta interfecha y rechaza un minuto antes", () => {
+      const cincoHoras = { isHighDemand: true as const, settings: { rule: "MIN_GAP" as const, gapMinutes: 300 } };
+      const previo = { ...cincoHoras, intervals: [{ ...ventana(18 * 60, 19 * 60 + 30), dayOffset: -1 }] };
+      assert.deepEqual(starts(calcularSlotsDisponibles({
+        schedules: [ventana(30, 120)], blocks: [], durationMinutes: 30, highDemand: previo,
+      })), [30, 60, 90]);
+      assert.deepEqual(starts(calcularSlotsDisponibles({
+        schedules: [ventana(29, 120)], blocks: [], durationMinutes: 30, highDemand: previo,
+      })), [59, 89], "00:29 queda fuera y el siguiente inicio de la grilla es 00:59");
+    });
+
+    it("respeta el vecino posterior en otra fecha (fin + gap <= inicio)", () => {
+      const cincoHoras = { isHighDemand: true as const, settings: { rule: "MIN_GAP" as const, gapMinutes: 300 } };
+      const result = calcularSlotsDisponibles({
+        schedules: [ventana(17 * 60, 19 * 60)],
+        blocks: [],
+        durationMinutes: 60,
+        highDemand: { ...cincoHoras, intervals: [{ ...ventana(0, 30), dayOffset: 1 }] },
+      });
+      // Vecino D+1 00:00 (absoluto 1440); el candidato debe terminar a lo sumo 19:00.
+      assert.deepEqual(starts(result), [17 * 60, 17 * 60 + 30, 18 * 60]);
+    });
+
+    it("soporta un gap mayor a 24 horas", () => {
+      const treintaHoras = { isHighDemand: true as const, settings: { rule: "MIN_GAP" as const, gapMinutes: 1800 } };
+      const result = calcularSlotsDisponibles({
+        schedules: [ventana(17 * 60, 20 * 60)],
+        blocks: [],
+        durationMinutes: 60,
+        highDemand: { ...treintaHoras, intervals: [{ ...ventana(12 * 60, 13 * 60), dayOffset: -1 }] },
+      });
+      // D-1 13:00 + 30h = D 19:00 (absoluto -1440 + 780 + 1800 = 1140).
+      assert.deepEqual(starts(result), [19 * 60]);
+    });
+
+    it("rechaza dayOffset no entero", () => {
+      assert.throws(() => calculate({
+        highDemand: highDemand([{ ...ventana(480, 540), dayOffset: 1.5 }]),
+      }), /dayOffset/);
     });
   });
 

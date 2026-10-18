@@ -3,6 +3,15 @@ export interface MinuteInterval {
   endMinutes: number;
 }
 
+/**
+ * Existing high-demand interval on an absolute day axis.
+ * `dayOffset` is relative to the candidate date (0 = candidate day, -1 = previous day).
+ * Absent means 0, preserving intra-day callers.
+ */
+export interface HighDemandInterval extends MinuteInterval {
+  dayOffset?: number;
+}
+
 export type AvailabilityBlock =
   | { kind: "FULL_DAY" }
   | ({ kind: "PARTIAL" } & MinuteInterval);
@@ -17,7 +26,7 @@ export interface HighDemandInput {
   /** Already-resolved local settings; null is valid for normal pets. */
   settings: HighDemandSettings | null;
   /** Existing high-demand intervals for MIN_GAP, already normalized by the caller. */
-  intervals?: MinuteInterval[];
+  intervals?: HighDemandInterval[];
   /** Existing high-demand daily count for MAX_PER_DAY, already normalized by the caller. */
   count?: number;
 }

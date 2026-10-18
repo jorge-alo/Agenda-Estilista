@@ -1625,3 +1625,150 @@ test("PET-09E.1 rechaza mascota inactiva con la misma política del PATCH", asyn
   assert.equal(result.status, 409);
   assert.equal(result.data.code, "PET_MASCOTA_INACTIVA");
 });
+
+function diaSemanaDe(fechaTexto: string): number {
+  const [year, month, day] = fechaTexto.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+}
+
+async function altaExigencia(activa: boolean): Promise<void> {
+  await pool.query("UPDATE mascotas SET alta_exigencia = ? WHERE id = ? AND local_id = ?", [activa ? 1 : 0, mascotaId, localId]);
+}
+
+async function agregarHorarioFecha(fechaTexto: string, inicio: string, fin: string): Promise<void> {
+  await pool.query(
+    "INSERT INTO horarios_local (local_id, dia_semana, hora_inicio, hora_fin) VALUES (?, ?, ?, ?)",
+    [localId, diaSemanaDe(fechaTexto), inicio, fin],
+  );
+}
+
+test("PET-12B MIN_GAP cruza fecha: 18:00-19:30 en D bloquea D+1 antes de 00:30", async () => {
+  await altaExigencia(true);
+  await settings("MIN_GAP", 300);
+  await agregarHorarioFecha("2099-10-21", "00:00", "02:00");
+  await turnoExistente("18:00", "19:30", "activo", 1, fecha);
+
+  const blocked = await post(body({ fecha: "2099-10-21", hora: "00:00" }));
+  assert.deepEqual([blocked.status, blocked.data.code], [409, "PET_SLOT_UNAVAILABLE"]);
+  const equal = await post(body({ fecha: "2099-10-21", hora: "00:30" }));
+  assert.deepEqual([equal.status, equal.data.horaFin], [201, "01:30"]);
+});
+
+test("PET-12B MIN_GAP cruza mes: 31/10 22:00 + 5h bloquea 01/11 antes de 03:00", async () => {
+  await altaExigencia(true);
+  await settings("MIN_GAP", 300);
+  await agregarHorarioFecha("2099-11-01", "00:00", "04:00");
+  await turnoExistente("21:00", "22:00", "activo", 1, "2099-10-31");
+
+  assert.equal((await post(body({ fecha: "2099-11-01", hora: "02:30" }))).status, 409);
+  const equal = await post(body({ fecha: "2099-11-01", hora: "03:00" }));
+  assert.deepEqual([equal.status, equal.data.horaFin], [201, "04:00"]);
+});
+
+test("PET-12B MIN_GAP cruza año: 31/12 22:00 + 5h bloquea 01/01 antes de 03:00", async () => {
+  await altaExigencia(true);
+  await settings("MIN_GAP", 300);
+  await agregarHorarioFecha("2100-01-01", "00:00", "04:00");
+  await turnoExistente("21:00", "22:00", "activo", 1, "2099-12-31");
+
+  assert.equal((await post(body({ fecha: "2100-01-01", hora: "02:30" }))).status, 409);
+  const equal = await post(body({ fecha: "2100-01-01", hora: "03:00" }));
+  assert.equal(equal.status, 201);
+});
+
+test("PET-12B MIN_GAP mayor a 24 horas abarca varios días de distancia", async () => {
+  await altaExigencia(true);
+  await settings("MIN_GAP", 1800);
+  await agregarHorarioFecha(fecha, "18:00", "20:00");
+  await turnoExistente("12:00", "13:00", "activo", 1, "2099-10-19");
+
+  assert.equal((await post(body({ hora: "18:30" }))).status, 409);
+  const equal = await post(body({ hora: "19:00" }));
+  assert.deepEqual([equal.status, equal.data.horaFin], [201, "20:00"]);
+});
+
+test("PET-12B MIN_GAP respeta el vecino high-demand posterior en otra fecha", async () => {
+  await altaExigencia(true);
+  await settings("MIN_GAP", 300);
+  await pool.query("DELETE FROM horarios_local WHERE local_id = ?", [localId]);
+  await agregarHorarioFecha(fecha, "17:00", "19:00");
+  await turnoExistente("00:00", "00:30", "activo", 1, "2099-10-21");
+
+  const result = await getDisponibilidadPet();
+  assert.deepEqual(result.data.slots.map(slot => slot.horaInicio), ["17:00", "17:30", "18:00"]);
+});
+
+test("PET-12B MIN_GAP interfecha cuenta activo/pendiente/completado y omite cancelado", async () => {
+  await altaExigencia(true);
+  await settings("MIN_GAP", 300);
+  await agregarHorarioFecha("2099-10-21", "00:00", "02:00");
+  await turnoExistente("18:00", "19:30", "activo", 1, fecha);
+
+  for (const estado of ["activo", "pendiente_pago", "completado"] as const) {
+    await pool.query("UPDATE turnos SET estado = ? WHERE local_id = ? AND mascota_id = ?", [estado, localId, mascotaId]);
+    const blocked = await post(body({ fecha: "2099-10-21", hora: "00:00" }));
+    assert.deepEqual([blocked.status, blocked.data.code], [409, "PET_SLOT_UNAVAILABLE"], estado);
+  }
+
+  await pool.query("UPDATE turnos SET estado = 'cancelado' WHERE local_id = ? AND mascota_id = ?", [localId, mascotaId]);
+  assert.equal((await post(body({ fecha: "2099-10-21", hora: "00:00" }))).status, 201, "cancelado no cuenta en MIN_GAP");
+});
+
+test("PET-12B mascota normal no hereda el MIN_GAP interfecha", async () => {
+  await altaExigencia(false);
+  await settings("MIN_GAP", 300);
+  await agregarHorarioFecha("2099-10-21", "00:00", "02:00");
+  await turnoExistente("18:00", "19:30", "activo", 1, fecha);
+
+  assert.equal((await post(body({ fecha: "2099-10-21", hora: "00:00" }))).status, 201);
+});
+
+test("PET-12B MAX_PER_DAY no contamina el conteo entre fechas", async () => {
+  await altaExigencia(true);
+  await settings("MAX_PER_DAY", 1);
+  await turnoExistente("09:00", "10:00", "completado", 1, fecha);
+  await agregarHorarioFecha("2099-10-21", "09:00", "11:00");
+
+  assert.equal((await post(body({ fecha: "2099-10-21", hora: "09:00" }))).status, 201, "otra fecha no cuenta");
+
+  await agregarHorarioFecha(fecha, "09:00", "11:00");
+  assert.equal((await post(body({ hora: "09:00" }))).status, 409, "la misma fecha sí cuenta");
+});
+
+test("PET-12B los vecinos high-demand no alteran la ocupación física del día", async () => {
+  await altaExigencia(true);
+  await settings("MIN_GAP", 60);
+  await agregarHorarioFecha(fecha, "09:00", "11:00");
+  await turnoExistente("09:00", "10:00", "activo", 1, "2099-10-19");
+
+  const slots = (await getDisponibilidadPet()).data.slots.map(slot => slot.horaInicio);
+  assert.ok(slots.includes("09:00"), "el turno de D-1 no ocupa D físicamente");
+});
+
+test("PET-12B reprogramación excluye el propio turno como vecino interfecha", async () => {
+  const id = await turnoExistente("21:00", "22:00", "activo", 1, fecha);
+  await altaExigencia(true);
+  await settings("MIN_GAP", 300);
+  await agregarHorarioFecha("2099-10-21", "00:00", "02:00");
+
+  const result = await patchTurno(id, { fecha: "2099-10-21", hora: "00:30" });
+  assert.deepEqual([result.status, result.data.horaFin], [200, "01:30"]);
+  assert.deepEqual([(await leerTurnoPet(id)).fecha, (await leerTurnoPet(id)).hora], ["2099-10-21", "00:30:00"]);
+});
+
+test("PET-12B reservas interfecha del mismo local se serializan y revalidan el gap", { timeout: 30000 }, async t => {
+  await altaExigencia(true);
+  await settings("MIN_GAP", 300);
+  await agregarHorarioFecha(fecha, "20:00", "23:00");
+  await agregarHorarioFecha("2099-10-21", "00:00", "02:00");
+  assert.equal(await turnosDelDia(), 0);
+
+  const [a, b] = await reservarConLockRetenido(
+    t,
+    body({ hora: "21:00" }),
+    body({ fecha: "2099-10-21", hora: "00:30" }),
+  );
+  assert.deepEqual([a.status, a.data.horaFin], [201, "22:00"]);
+  assert.deepEqual([b.status, b.data.code], [409, "PET_SLOT_UNAVAILABLE"]);
+  assert.equal(await turnosDelDia(), 1, "la segunda revalidación observa el turno confirmado por la primera");
+});

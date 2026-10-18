@@ -1,7 +1,7 @@
 import type { Pool, PoolConnection, RowDataPacket } from "mysql2/promise";
 import { pool } from "../../../config/db";
 import { calcularDuracionTotal, calcularSlotsDisponibles, horaAMinutos, minutosAHora } from "./disponibilidad.engine";
-import type { AvailabilityBlock, AvailableInterval, HighDemandSettings, MinuteInterval } from "./disponibilidad.types";
+import type { AvailabilityBlock, AvailableInterval, HighDemandInput, HighDemandInterval, HighDemandSettings, MinuteInterval } from "./disponibilidad.types";
 
 const INT_MAX = 2147483647;
 const TIME_ZONE = "America/Argentina/Buenos_Aires";
@@ -91,6 +91,15 @@ interface TurnoPetRow extends RowDataPacket {
   estado: "activo" | "pendiente_pago" | "cancelado" | "completado" | null;
   alta_exigencia_snapshot: number | null;
 }
+
+interface VecinoHighDemandRow extends RowDataPacket {
+  hora: string;
+  hora_fin: string | null;
+  estado: string | null;
+  day_offset: number | string | null;
+}
+
+const ESTADOS_HIGH_DEMAND = ["activo", "pendiente_pago", "completado"] as const;
 
 interface ContextoTemporalArgentina {
   fecha: string;
@@ -192,7 +201,7 @@ async function obtenerBloqueos(reader: SqlReader, localId: number, fecha: string
 
 async function obtenerTurnosPet(reader: SqlReader, localId: number, fecha: string, excludeTurnoId?: number): Promise<{
   occupiedIntervals: MinuteInterval[];
-  highDemandIntervals: MinuteInterval[];
+  highDemandIntervals: HighDemandInterval[];
   highDemandCount: number;
 }> {
   const exclusion = excludeTurnoId === undefined ? "" : " AND id <> ?";
@@ -204,7 +213,7 @@ async function obtenerTurnosPet(reader: SqlReader, localId: number, fecha: strin
     values,
   );
   const occupiedIntervals: MinuteInterval[] = [];
-  const highDemandIntervals: MinuteInterval[] = [];
+  const highDemandIntervals: HighDemandInterval[] = [];
   let highDemandCount = 0;
 
   for (const [index, row] of rows.entries()) {
@@ -225,6 +234,60 @@ async function obtenerTurnosPet(reader: SqlReader, localId: number, fecha: strin
     }
   }
   return { occupiedIntervals, highDemandIntervals, highDemandCount };
+}
+
+function vecinoDesdeRow(row: VecinoHighDemandRow, campo: string): HighDemandInterval {
+  if (row.estado === null || !(ESTADOS_HIGH_DEMAND as readonly string[]).includes(row.estado)) {
+    throw errorIntegridad(`turno PET vecino ${campo} tiene estado inválido`);
+  }
+  const dayOffset = Number(row.day_offset);
+  if (!Number.isSafeInteger(dayOffset)) {
+    throw errorIntegridad(`turno PET vecino ${campo} tiene desplazamiento de días inválido`);
+  }
+  return { ...intervaloDb(row.hora, row.hora_fin, `turno PET vecino ${campo}`), dayOffset };
+}
+
+/**
+ * Closest high-demand turn strictly before and after the candidate date.
+ * DATEDIFF keeps the absolute day axis independent from the host timezone.
+ * A single neighbor per side is enough: PET turns never cross midnight, so the
+ * latest (fecha, hora_fin) maximizes the previous end and the earliest (fecha, hora)
+ * minimizes the next start.
+ */
+async function obtenerVecinosHighDemand(
+  reader: SqlReader,
+  localId: number,
+  fecha: string,
+  excludeTurnoId?: number,
+): Promise<HighDemandInterval[]> {
+  const exclusion = excludeTurnoId === undefined ? "" : " AND id <> ?";
+  const values = excludeTurnoId === undefined ? [fecha, localId, fecha] : [fecha, localId, fecha, excludeTurnoId];
+  const columnas = `hora, hora_fin, estado, DATEDIFF(fecha, ?) AS day_offset`;
+  const filtro = `local_id = ? AND mascota_id IS NOT NULL
+       AND alta_exigencia_snapshot = 1
+       AND estado IN ('activo', 'pendiente_pago', 'completado')`;
+
+  const [previos] = await reader.query<VecinoHighDemandRow[]>(
+    `SELECT ${columnas}
+     FROM turnos
+     WHERE ${filtro} AND fecha < ?${exclusion}
+     ORDER BY fecha DESC, hora_fin DESC, id DESC
+     LIMIT 1`,
+    values,
+  );
+  const [posteriores] = await reader.query<VecinoHighDemandRow[]>(
+    `SELECT ${columnas}
+     FROM turnos
+     WHERE ${filtro} AND fecha > ?${exclusion}
+     ORDER BY fecha ASC, hora ASC, id ASC
+     LIMIT 1`,
+    values,
+  );
+
+  return [
+    ...previos.map(row => vecinoDesdeRow(row, "anterior")),
+    ...posteriores.map(row => vecinoDesdeRow(row, "posterior")),
+  ];
 }
 
 export function formatearSlots(slots: AvailableInterval[]): Array<{ horaInicio: string; horaFin: string }> {
@@ -278,11 +341,20 @@ export async function prepararSlotsPorContexto(
   const minimumStartMinutes = input.fecha === temporal.fecha ? temporal.minimumStartMinutes : null;
   if (minimumStartMinutes !== null && minimumStartMinutes >= 1440) return [];
 
-  const highDemand = input.altaExigencia
-    ? input.settings?.rule === "MIN_GAP"
-      ? { isHighDemand: true, settings: input.settings, intervals: turns.highDemandIntervals }
-      : { isHighDemand: true, settings: input.settings, count: turns.highDemandCount }
-    : { isHighDemand: false, settings: null };
+  let highDemand: HighDemandInput;
+  if (!input.altaExigencia) {
+    highDemand = { isHighDemand: false, settings: null };
+  } else if (input.settings?.rule === "MIN_GAP") {
+    // Only MIN_GAP needs the cross-date axis; MAX_PER_DAY keeps counting the candidate day alone.
+    const vecinos = await obtenerVecinosHighDemand(reader, localId, input.fecha, input.excludeTurnoId);
+    highDemand = {
+      isHighDemand: true,
+      settings: input.settings,
+      intervals: [...turns.highDemandIntervals, ...vecinos],
+    };
+  } else {
+    highDemand = { isHighDemand: true, settings: input.settings, count: turns.highDemandCount };
+  }
 
   return calcularSlotsDisponibles({
     schedules,
