@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { ipKeyGenerator, rateLimit } from "express-rate-limit";
-import { consumeAccess, requestAccess } from "./session.controller";
+import { consumeAccess, getSessionMe, logoutSession, requestAccess } from "./session.controller";
+import { petPublicSessionMiddleware } from "./petPublicSession.middleware";
 
 export const petSessionPublicRouter = Router();
 const requestLimiter = rateLimit({
@@ -27,3 +28,6 @@ petSessionPublicRouter.post("/:slug/session/consume", (_req, res, next) => {
   res.set("Cache-Control", "no-store");
   next();
 }, consumeLimiter, consumeAccess);
+
+petSessionPublicRouter.get("/:slug/session/me", petPublicSessionMiddleware, getSessionMe);
+petSessionPublicRouter.post("/:slug/session/logout", logoutSession);

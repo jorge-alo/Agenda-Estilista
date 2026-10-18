@@ -205,6 +205,17 @@ export async function consumePetAccess(slug: string, body: unknown): Promise<Con
 
 interface SessionContextRow extends RowDataPacket, PetSessionContext {}
 
+export interface PetSessionMe {
+  cliente: { nombre: string };
+  mascotas: Array<{ id: number; nombre: string }>;
+}
+
+interface PetSessionMeRow extends RowDataPacket {
+  clienteNombre: string;
+  mascotaId: number | null;
+  mascotaNombre: string | null;
+}
+
 export async function findPetPublicSession(slug: string, secret: string): Promise<PetSessionContext | null> {
   if (!slug || slug.length > 100) return null;
   const [sessions] = await pool.query<SessionContextRow[]>(
@@ -219,4 +230,44 @@ export async function findPetPublicSession(slug: string, secret: string): Promis
   if (!sessions.length) return null;
   const { sessionId, localId, clienteId } = sessions[0];
   return { sessionId, localId, clienteId };
+}
+
+export async function getPetSessionMe(context: PetSessionContext): Promise<PetSessionMe | null> {
+  const [rows] = await pool.query<PetSessionMeRow[]>(
+    `SELECT c.nombre AS clienteNombre, m.id AS mascotaId, m.nombre AS mascotaNombre
+     FROM clientes c
+     LEFT JOIN mascota_clientes mc
+       ON mc.cliente_id = c.id AND mc.local_id = c.local_id
+     LEFT JOIN mascotas m
+       ON m.id = mc.mascota_id AND m.local_id = mc.local_id
+      AND m.local_id = c.local_id AND m.activo = 1 AND m.reserva_online_habilitada = 1
+     WHERE c.id = ? AND c.local_id = ?
+     ORDER BY m.nombre, m.id`,
+    [context.clienteId, context.localId],
+  );
+  if (!rows.length) return null;
+  const mascotas: PetSessionMe["mascotas"] = [];
+  for (const row of rows) {
+    // LEFT JOIN produces NULL pet columns for missing/ineligible relationships.
+    if (row.mascotaId === null || row.mascotaNombre === null) continue;
+    mascotas.push({ id: row.mascotaId, nombre: row.mascotaNombre });
+  }
+  return { cliente: { nombre: rows[0].clienteNombre }, mascotas };
+}
+
+export async function logoutPetPublicSession(slug: string, secret: string): Promise<void> {
+  if (!slug || slug.length > 100) throw new PetSessionRequestError(404, "PET_LOCAL_NOT_FOUND");
+  const [locals] = await pool.query<LocalRow[]>(
+    "SELECT id FROM locales WHERE slug = ? AND activo = 1 AND business_type = 'PET_GROOMING'",
+    [slug],
+  );
+  if (!locals.length) throw new PetSessionRequestError(404, "PET_LOCAL_NOT_FOUND");
+  // Unknown/expired/revoked secrets and tokens from another tenant are intentionally
+  // indistinguishable. Updating an expired row is safe; it never renews the session.
+  await pool.query(
+    `UPDATE pet_client_sessions
+     SET revoked_at = COALESCE(revoked_at, UTC_TIMESTAMP(3))
+     WHERE token_hash = ? AND local_id = ?`,
+    [hashOpaqueSecret(secret), locals[0].id],
+  );
 }
