@@ -37,7 +37,7 @@ interface LocalFixture { id: number; slug: string }
 async function createLocal(): Promise<LocalFixture> {
   const slug = `${prefix}-${serial++}`;
   const local = await q<ResultSetHeader>(
-    "INSERT INTO locales (nombre, slug, activo, business_type) VALUES (?, ?, 1, 'PET_GROOMING')",
+    "INSERT INTO locales (nombre, slug, activo, business_type, suscripcion_estado, suscripcion_vencimiento) VALUES (?, ?, 1, 'PET_GROOMING', 'activo', '2099-12-31')",
     [prefix, slug]);
   localIds.push(local.insertId);
   return { id: local.insertId, slug };
@@ -197,20 +197,29 @@ beforeEach(t => {
 
 afterEach(async t => {
   if ("mock" in t) t.mock.restoreAll();
-  for (const localId of localIds.splice(0)) {
+  for (const localId of [...localIds]) {
     await q("DELETE FROM turnos WHERE local_id = ?", [localId]);
     await q("DELETE FROM bloqueos_local WHERE local_id = ?", [localId]);
     await q("DELETE FROM horarios_local WHERE local_id = ?", [localId]);
     await q("DELETE FROM pet_settings WHERE local_id = ?", [localId]);
-    await q("DELETE FROM mascota_servicios WHERE local_id = ?", [localId]);
-    await q("DELETE FROM mascota_extras WHERE local_id = ?", [localId]);
-    await q("DELETE FROM mascota_clientes WHERE local_id = ?", [localId]);
+    // These tables have pet/customer-leading indexes, not local-leading ones.
+    // Point-scope fixture cleanup must not scan/lock other tests' sessions/links.
+    const pets = await q<(RowDataPacket & { id: number })[]>("SELECT id FROM mascotas WHERE local_id = ?", [localId]);
+    for (const pet of pets) {
+      await q("DELETE FROM mascota_servicios WHERE mascota_id = ? AND local_id = ?", [pet.id, localId]);
+      await q("DELETE FROM mascota_extras WHERE mascota_id = ? AND local_id = ?", [pet.id, localId]);
+      await q("DELETE FROM mascota_clientes WHERE mascota_id = ? AND local_id = ?", [pet.id, localId]);
+    }
     await q("DELETE FROM mascotas WHERE local_id = ?", [localId]);
-    await q("DELETE FROM pet_client_sessions WHERE local_id = ?", [localId]);
+    const clients = await q<(RowDataPacket & { id: number })[]>("SELECT id FROM clientes WHERE local_id = ?", [localId]);
+    for (const client of clients) {
+      await q("DELETE FROM pet_client_sessions WHERE cliente_id = ? AND local_id = ?", [client.id, localId]);
+    }
     await q("DELETE FROM servicios WHERE local_id = ?", [localId]);
     await q("DELETE FROM extras WHERE local_id = ?", [localId]);
     await q("DELETE FROM clientes WHERE local_id = ?", [localId]);
     await q("DELETE FROM locales WHERE id = ? AND nombre = ?", [localId, prefix]);
+    localIds.splice(localIds.indexOf(localId), 1);
   }
 });
 

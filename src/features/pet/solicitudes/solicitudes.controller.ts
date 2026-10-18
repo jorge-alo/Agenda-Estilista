@@ -5,8 +5,10 @@ import { notificarNuevaSolicitud } from "./solicitudes.notification";
 import { SolicitudError, validarCambio, validarCrear, validarFiltro, validarId } from "./solicitudes.types";
 import { InvalidClientPhoneError } from "../../../shared/phone/normalizeClientPhone";
 import { ClientPhoneConflictError } from "../../../shared/phone/clientPhoneDuplicate";
+import { PetPublicBookingUnavailableError } from "../shared/publicBookingAccess";
 
 function errorResponse(error: unknown, res: Response): Response {
+  if (error instanceof PetPublicBookingUnavailableError) return res.status(409).json({ error: "PET_BOOKING_UNAVAILABLE" });
   if (error instanceof InvalidClientPhoneError) return res.status(400).json({ error: error.code });
   if (error instanceof ClientPhoneConflictError) return res.status(409).json({ error: error.code });
   if (error instanceof SolicitudError) return res.status(error.status).json({ error: error.code });
@@ -14,6 +16,7 @@ function errorResponse(error: unknown, res: Response): Response {
 }
 
 export async function crear(req: Request, res: Response) {
+  res.set("Cache-Control", "no-store");
   try {
     const slug = req.params.slug;
     if (typeof slug !== "string" || !slug || slug.length > 100) throw new SolicitudError(404, "PET_LOCAL_NOT_FOUND");

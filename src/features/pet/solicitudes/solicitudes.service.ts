@@ -4,6 +4,7 @@ import { CrearSolicitud, EstadoSolicitud, SolicitudError } from "./solicitudes.t
 import { SolicitudSnapshot, validarConversion } from "./conversion.types";
 import { normalizeClientPhone } from "../../../shared/phone/normalizeClientPhone";
 import { ClientPhoneConflictError, clientPhoneDuplicateKey } from "../../../shared/phone/clientPhoneDuplicate";
+import { requirePetPublicBookingEnabled, type PetPublicBookingLocal } from "../shared/publicBookingAccess";
 
 interface SolicitudRow extends RowDataPacket {
   id: number;
@@ -23,6 +24,7 @@ interface SolicitudRow extends RowDataPacket {
 
 export interface LocalSolicitudPublica {
   id: number;
+  slug: string;
   telefono: string | null;
 }
 
@@ -43,28 +45,49 @@ export async function resolverLocal(slug: string): Promise<LocalSolicitudPublica
     [slug]
   );
   if (locales.length === 0) throw new SolicitudError(404, "PET_LOCAL_NOT_FOUND");
-  return { id: locales[0].id as number, telefono: locales[0].telefono as string | null };
+  return { id: locales[0].id as number, slug, telefono: locales[0].telefono as string | null };
 }
 
+interface LocalSolicitudBloqueado extends RowDataPacket, PetPublicBookingLocal { slug: string; telefono: string | null }
+
 export async function crear(local: LocalSolicitudPublica, data: CrearSolicitud): Promise<SolicitudCreada> {
-  const [result] = await pool.query<ResultSetHeader>(
-    `INSERT INTO solicitudes_pet
-     (local_id, responsable_nombre, responsable_telefono, responsable_telefono_secundario,
-      mascota_nombre, mascota_raza, mascota_fecha_nacimiento, mascota_tamano, mascota_sexo, motivo_contacto)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [local.id, data.responsableNombre, data.responsableTelefono, data.responsableTelefonoSecundario,
-      data.mascotaNombre, data.mascotaRaza, data.mascotaFechaNacimiento, data.mascotaTamano, data.mascotaSexo, data.motivoContacto]
-  );
-  return {
-    solicitudId: result.insertId,
-    localId: local.id,
-    telefonoLocal: local.telefono,
-    responsableNombre: data.responsableNombre,
-    responsableTelefono: data.responsableTelefono,
-    mascotaNombre: data.mascotaNombre,
-    mascotaRaza: data.mascotaRaza,
-    motivoContacto: data.motivoContacto,
-  };
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [rows] = await connection.query<LocalSolicitudBloqueado[]>(
+      `SELECT id, slug, activo, business_type, telefono, suscripcion_estado,
+         DATE_FORMAT(suscripcion_vencimiento, '%Y-%m-%d') AS suscripcion_vencimiento
+       FROM locales WHERE id = ? FOR UPDATE`, [local.id],
+    );
+    const locked = rows[0];
+    if (!locked || locked.slug !== local.slug || locked.activo !== 1 || locked.business_type !== "PET_GROOMING") {
+      throw new SolicitudError(404, "PET_LOCAL_NOT_FOUND");
+    }
+    await requirePetPublicBookingEnabled(connection, locked);
+    const [result] = await connection.query<ResultSetHeader>(
+      `INSERT INTO solicitudes_pet
+       (local_id, responsable_nombre, responsable_telefono, responsable_telefono_secundario,
+        mascota_nombre, mascota_raza, mascota_fecha_nacimiento, mascota_tamano, mascota_sexo, motivo_contacto)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [local.id, data.responsableNombre, data.responsableTelefono, data.responsableTelefonoSecundario,
+        data.mascotaNombre, data.mascotaRaza, data.mascotaFechaNacimiento, data.mascotaTamano, data.mascotaSexo, data.motivoContacto],
+    );
+    await requirePetPublicBookingEnabled(connection, locked);
+    await connection.commit();
+    return {
+      solicitudId: result.insertId,
+      localId: local.id,
+      telefonoLocal: locked.telefono,
+      responsableNombre: data.responsableNombre,
+      responsableTelefono: data.responsableTelefono,
+      mascotaNombre: data.mascotaNombre,
+      mascotaRaza: data.mascotaRaza,
+      motivoContacto: data.motivoContacto,
+    };
+  } catch (error: unknown) {
+    await connection.rollback();
+    throw error;
+  } finally { connection.release(); }
 }
 
 export async function listar(localId: number, estado: EstadoSolicitud | null) {

@@ -14,6 +14,8 @@ import { generateOpaqueSecret, hashOpaqueSecret } from "../session/opaqueSecret"
 import { petSessionPublicRouter } from "../session/session.routes";
 import type { PetSessionContext } from "../session/session.types";
 import publicBookingRouter from "./publicBooking.routes";
+import { solicitudesPublicRouter } from "../solicitudes/solicitudes.routes";
+import publicLocalRouter from "../../publicLocal/publicLocal.routes";
 
 export { pool };
 export const FECHA = "2099-10-20";
@@ -23,6 +25,7 @@ const locals: number[] = [];
 const jwtSecret = "PET12E_TEST_ONLY";
 let server: Server;
 let port: number;
+let fixtureSerial = 0;
 export const logs: unknown[][] = [];
 
 // mysql2 errors can contain SQL and credentials. Never expose them to the reporter.
@@ -53,9 +56,9 @@ export async function session(localId: number, clienteId: number, ttl = 3600) {
 }
 
 export async function fixture(): Promise<Fixture> {
-  const slug = `${prefix}-${locals.length}`;
+  const slug = `${prefix}-${fixtureSerial++}`;
   const local = await q<ResultSetHeader>(
-    "INSERT INTO locales (nombre, slug, activo, business_type) VALUES (?, ?, 1, 'PET_GROOMING')", [prefix, slug]);
+    "INSERT INTO locales (nombre, slug, activo, business_type, suscripcion_estado, suscripcion_vencimiento) VALUES (?, ?, 1, 'PET_GROOMING', 'activo', '2099-12-31')", [prefix, slug]);
   const localId = local.insertId;
   locals.push(localId);
   const client = await q<ResultSetHeader>(
@@ -220,6 +223,8 @@ export function useBookingHarness(): void {
     const app = express();
     app.set("trust proxy", 1);
     app.use(express.json({ limit: "1mb" }));
+    app.use("/api/public/local", publicLocalRouter);
+    app.use("/api/pet/public", solicitudesPublicRouter);
     app.use("/api/pet/admin", petRouter);
     app.use("/api/pet/public", petSessionPublicRouter);
     app.use("/api/pet/public", publicBookingRouter);
@@ -249,6 +254,8 @@ export function useBookingHarness(): void {
       await q("DELETE FROM mascota_extras WHERE local_id = ?", [localId]);
       await q("DELETE FROM servicios WHERE local_id = ?", [localId]);
       await q("DELETE FROM extras WHERE local_id = ?", [localId]);
+      await q("DELETE FROM solicitudes_pet WHERE local_id = ?", [localId]);
+      await q("DELETE FROM pagos_suscripcion WHERE local_id = ?", [localId]);
       await q("DELETE FROM locales WHERE id = ? AND nombre = ?", [localId, prefix]);
     }
     locals.length = 0;

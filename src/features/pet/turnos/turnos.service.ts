@@ -6,9 +6,10 @@ import { TurnoPetError, type ConsultaListadoTurnosPet, type CrearTurnoPetPayload
 import { bloquearSesionParaReserva, comprobarVigenciaSesion } from "../session/session.authorization";
 import { PetSessionRequestError, type PetSessionContext } from "../session/session.types";
 import { bloquearConfiguracionCreacion } from "./turnos.creation-locks";
+import { requirePetPublicBookingEnabled, type PetPublicBookingLocal } from "../shared/publicBookingAccess";
 
 interface LocalRow extends RowDataPacket { business_type: string }
-interface LocalCreacionRow extends LocalRow { activo?: number; slug?: string }
+interface LocalCreacionRow extends RowDataPacket, PetPublicBookingLocal { slug: string }
 interface ClienteRow extends RowDataPacket { nombre: string; telefono: string }
 interface MascotaRow extends RowDataPacket { activo: number; reserva_online_habilitada?: number }
 interface TurnoPetSnapshotRow extends RowDataPacket {
@@ -81,7 +82,7 @@ async function crearTurnoPetTransaccional(autoridad: AutoridadCreacion, data: Se
     // Lock even when there are no turns: all PET reservations of this local serialize here.
     const [locales] = await connection.query<LocalCreacionRow[]>(
       session
-        ? "SELECT id, business_type, activo, slug FROM locales WHERE id = ? FOR UPDATE"
+        ? "SELECT id, business_type, activo, slug, suscripcion_estado, DATE_FORMAT(suscripcion_vencimiento, '%Y-%m-%d') AS suscripcion_vencimiento FROM locales WHERE id = ? FOR UPDATE"
         : "SELECT id, business_type FROM locales WHERE id = ? FOR UPDATE", [localId],
     );
     if (autoridad.tipo === "PUBLIC" && (!locales.length || locales[0].activo !== 1
@@ -94,6 +95,7 @@ async function crearTurnoPetTransaccional(autoridad: AutoridadCreacion, data: Se
     }
 
     if (session) await bloquearSesionParaReserva(connection, session);
+    if (session) await requirePetPublicBookingEnabled(connection, locales[0]);
 
     const [mascotas] = await connection.query<MascotaRow[]>(
       session
@@ -146,6 +148,7 @@ async function crearTurnoPetTransaccional(autoridad: AutoridadCreacion, data: Se
         [turno.insertId, extra.id, extra.nombre, extra.duracionMinutos],
       );
     }
+    if (session) await requirePetPublicBookingEnabled(connection, locales[0]);
     if (session) await comprobarVigenciaSesion(connection, session);
     await connection.commit();
     return {

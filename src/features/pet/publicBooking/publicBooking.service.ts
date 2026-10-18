@@ -11,6 +11,7 @@ import { autorizarMascota } from "./publicBooking.authorization";
 import { PetSessionRequestError, type PetSessionContext } from "../session/session.types";
 import { crearTurnoPetDesdeSesion } from "../turnos/turnos.service";
 import { TurnoPetError, type SeleccionCreacionTurnoPet } from "../turnos/turnos.types";
+import { PetPublicBookingUnavailableError, PetPublicLocalUnavailableError, requirePetPublicBookingForLocal } from "../shared/publicBookingAccess";
 import {
   PublicBookingError,
   duracionPublica,
@@ -69,12 +70,17 @@ async function listarExtrasPublicos(localId: number, mascotaId: number): Promise
  * Servicios and extras are fetched separately to avoid a cartesian product.
  */
 export async function obtenerOpcionesReserva(localId: number, clienteId: number, mascotaId: number): Promise<OpcionesReserva> {
-  await autorizarMascota(localId, clienteId, mascotaId);
-  const [servicios, extras] = await Promise.all([
-    listarServiciosPublicos(localId, mascotaId),
-    listarExtrasPublicos(localId, mascotaId),
-  ]);
-  return { servicios, extras };
+  try {
+    await requirePetPublicBookingForLocal(pool, localId);
+    await autorizarMascota(localId, clienteId, mascotaId);
+    const [servicios, extras] = await Promise.all([
+      listarServiciosPublicos(localId, mascotaId),
+      listarExtrasPublicos(localId, mascotaId),
+    ]);
+    return { servicios, extras };
+  } catch (error: unknown) {
+    mapearErrorPublicBooking(error);
+  }
 }
 
 /**
@@ -83,6 +89,12 @@ export async function obtenerOpcionesReserva(localId: number, clienteId: number,
  * rethrown into the sanitized 500 pipeline. Empty slots are a valid answer.
  */
 function mapearErrorPublicBooking(error: unknown): never {
+  if (error instanceof PetPublicBookingUnavailableError) {
+    throw new PublicBookingError(409, "PET_BOOKING_UNAVAILABLE", "Reserva no disponible");
+  }
+  if (error instanceof PetPublicLocalUnavailableError) {
+    throw new PublicBookingError(401, "PET_SESSION_INVALID", "Sesión inválida");
+  }
   if ((error instanceof DisponibilidadPetError || error instanceof TurnoPetError
     || error instanceof PetSessionRequestError) && error.status < 500) {
     switch (error.code) {
@@ -126,8 +138,9 @@ export async function obtenerDisponibilidadPublica(
   clienteId: number,
   consulta: ConsultaDisponibilidadPet,
 ): Promise<RespuestaDisponibilidadPet> {
-  await autorizarMascota(localId, clienteId, consulta.mascotaId);
   try {
+    await requirePetPublicBookingForLocal(pool, localId);
+    await autorizarMascota(localId, clienteId, consulta.mascotaId);
     const resultado = await prepararDisponibilidad(pool, localId, consulta);
     return {
       fecha: consulta.fecha,

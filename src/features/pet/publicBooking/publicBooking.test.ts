@@ -32,7 +32,7 @@ interface LocalFixture { id: number; slug: string }
 async function createLocal(options: { active?: number; kind?: string } = {}): Promise<LocalFixture> {
   const slug = `${prefix}-${serial++}`;
   const local = await q<ResultSetHeader>(
-    "INSERT INTO locales (nombre, slug, activo, business_type) VALUES (?, ?, ?, ?)",
+    "INSERT INTO locales (nombre, slug, activo, business_type, suscripcion_estado, suscripcion_vencimiento) VALUES (?, ?, ?, ?, 'activo', '2099-12-31')",
     [prefix, slug, options.active ?? 1, options.kind ?? "PET_GROOMING"]);
   localIds.push(local.insertId);
   return { id: local.insertId, slug };

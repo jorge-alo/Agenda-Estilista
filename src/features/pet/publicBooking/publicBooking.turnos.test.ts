@@ -268,7 +268,8 @@ test("PET-12E preflight: todas las lecturas son locking y extras se bloquean ASC
   assert.equal((await post(f, body(f, { extraIds: [...f.extraIds].reverse() }))).status, 201);
   const domainRead = reads.findIndex(sql => sql.startsWith("SELECT id, activo, alta_exigencia FROM mascotas"));
   assert.ok(domainRead > 0);
-  assert.ok(reads.slice(0, domainRead).every(sql => /FOR (UPDATE|SHARE)/.test(sql)));
+  assert.ok(reads.slice(0, domainRead).every(sql => /FOR (UPDATE|SHARE)/.test(sql)
+    || (sql.startsWith("SELECT CONCAT(DATE_FORMAT(UTC_TIMESTAMP(3)") && !/\bFROM\b/.test(sql))));
   assert.deepEqual(lockedExtras, f.extraIds);
 });
 
@@ -376,15 +377,17 @@ test("PET-12E duración corrupta leída por PET-07 falla 500 sin alterar CHECKs 
   assert.deepEqual(await counts(f), { turnos: 0, extras: 0 });
 });
 
-test("PET-12E conserva política SaaS actual: C/D/E permiten local activo con suscripción vencida", async () => {
+test("PET-12E.1 C/D/E rechazan SaaS vencido uniformemente sin invalidar sesión", async () => {
   const f = await fixture();
   await q("UPDATE locales SET suscripcion_estado = 'vencido', suscripcion_vencimiento = '2000-01-01' WHERE id = ?", [f.localId]);
   const options = await call(`/api/pet/public/${f.slug}/mascotas/${f.mascotaId}/opciones-reserva`, { headers: { Authorization: `Bearer ${f.secret}` } });
-  assert.equal(options.status, 200);
+  rejected(options, 409, "PET_BOOKING_UNAVAILABLE");
   const availability = await call(`/api/pet/public/${f.slug}/disponibilidad`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${f.secret}` },
     body: JSON.stringify({ mascotaId: f.mascotaId, servicioId: f.servicioId, extraIds: [], fecha: FECHA }),
   });
-  assert.equal(availability.status, 200);
-  assert.equal((await post(f)).status, 201);
+  rejected(availability, 409, "PET_BOOKING_UNAVAILABLE");
+  rejected(await post(f), 409, "PET_BOOKING_UNAVAILABLE");
+  assert.deepEqual(await counts(f), { turnos: 0, extras: 0 });
+  assert.equal((await sessionState(f)).revoked, null);
 });

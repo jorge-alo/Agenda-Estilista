@@ -62,7 +62,7 @@ before(async () => {
   assert.ok(addr && typeof addr !== "string");
   port = addr.port;
   for (const [index, kind, active, telefono] of [[0, "PET_GROOMING", 1, "011 5555-0000"], [1, "PET_GROOMING", 1, "011 5555-1111"], [2, "PET_GROOMING", 1, "011 5555-2222"], [3, "BEAUTY", 1, "011 5555-3333"], [4, "PET_GROOMING", 0, "011 5555-4444"], [5, "PET_GROOMING", 1, null], [6, "PET_GROOMING", 1, "   "], [7, "PET_GROOMING", 1, "sin número"]] as const) {
-    const [result]: any = await pool.query("INSERT INTO locales (nombre, slug, business_type, activo, telefono) VALUES (?, ?, ?, ?, ?)",
+    const [result]: any = await pool.query("INSERT INTO locales (nombre, slug, business_type, activo, telefono, suscripcion_estado, suscripcion_vencimiento) VALUES (?, ?, ?, ?, ?, 'activo', '2099-12-31')",
       [prefix, `${prefix}-${index}`, kind, active, telefono]);
     ids.push(result.insertId);
   }
@@ -164,10 +164,16 @@ test("local sin teléfono NULL, vacío o sin dígitos conserva solicitud y no ll
 test("fallo del INSERT no dispara notificación", async t => {
   const original = pool.query.bind(pool);
   const [before]: any = await original("SELECT COUNT(*) AS total FROM solicitudes_pet WHERE local_id = ? AND responsable_nombre = 'Ana'", [ids[0]]);
-  t.mock.method(pool, "query", ((...args: Parameters<typeof pool.query>) => {
-    if (String(args[0]).includes("INSERT INTO solicitudes_pet")) return Promise.reject(new Error("fallo INSERT de prueba"));
-    return original(...args);
-  }) as typeof pool.query);
+  const get = pool.getConnection.bind(pool);
+  t.mock.method(pool, "getConnection", async () => {
+    const connection = await get();
+    const query = connection.query.bind(connection);
+    t.mock.method(connection, "query", ((...args: Parameters<typeof connection.query>) => {
+      if (String(args[0]).includes("INSERT INTO solicitudes_pet")) return Promise.reject(new Error("fallo INSERT de prueba"));
+      return query(...args);
+    }) as typeof connection.query);
+    return connection;
+  });
   assert.equal((await call("POST", publico(), body)).status, 500);
   assert.equal(senderCalls.length, 0);
   const [rows]: any = await original("SELECT id FROM solicitudes_pet WHERE local_id = ? AND responsable_nombre = 'Ana'", [ids[0]]);
@@ -208,7 +214,7 @@ test("público: valida campos obligatorios, longitud, fecha, tamaño/sexo y rech
 
 test("público: limiter por IP + slug (10 en 15 minutos)", async () => {
   const slug = `${prefix}-8`;
-  const [r]: any = await pool.query("INSERT INTO locales (nombre, slug, business_type, telefono) VALUES (?, ?, 'PET_GROOMING', ?)", [prefix, slug, "011 5555-8888"]);
+  const [r]: any = await pool.query("INSERT INTO locales (nombre, slug, business_type, telefono, suscripcion_estado, suscripcion_vencimiento) VALUES (?, ?, 'PET_GROOMING', ?, 'activo', '2099-12-31')", [prefix, slug, "011 5555-8888"]);
   ids.push(r.insertId);
   for (let n = 0; n < 10; n++) assert.equal((await call("POST", publico(slug), body)).status, 201);
   assert.equal((await call("POST", publico(slug), body)).status, 429);

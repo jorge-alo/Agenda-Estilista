@@ -8,7 +8,7 @@ import {
 } from "./publicBooking.turnos.test-support";
 
 useBookingHarness();
-const isLocalLock = (sql: string) => /^SELECT id, business_type(?:, activo, slug)? FROM locales WHERE id = \? FOR UPDATE$/.test(sql);
+const isLocalLock = (sql: string) => /^SELECT id, business_type(?:,.*)? FROM locales WHERE id = \? FOR UPDATE$/.test(sql);
 
 async function anotherOwner(f: Fixture): Promise<Fixture> {
   const client = await q<ResultSetHeader>("INSERT INTO clientes (local_id, nombre, telefono) VALUES (?, 'PET12E Bea', '1123452001')", [f.localId]);
