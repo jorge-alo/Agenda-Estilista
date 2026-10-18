@@ -119,17 +119,20 @@ for (const diaSemana of [-1, 7, 1.5, "1", null, true]) {
   });
 }
 
-for (const horaInicio of ["9:00", "24:00", "-01:00", "12:60", "12:00:60", "09:00:00.5", null, 900]) {
+for (const horaInicio of ["9:00", "24:00", "-01:00", "12:60", "12:00:60", "09:00:00.5", "09:00:01", "09:00:30", "09:30:59", "23:59:59", null, 900]) {
   test(`Hora inválida ${JSON.stringify(horaInicio)}`, async () => {
     assert.equal((await http("POST", base, { ...valido, horaInicio })).status, 400);
   });
 }
 
-test("Inicio igual/mayor a fin y medianoche rechazados; segundos válidos", async () => {
+test("Inicio igual/mayor a fin y medianoche rechazados; HH:mm y segundos 00 válidos", async () => {
   for (const [horaInicio, horaFin] of [["10:00", "10:00"], ["22:00", "02:00"]]) {
     assert.equal((await http("POST", base, { diaSemana: 1, horaInicio, horaFin })).status, 400);
   }
-  await crear({ diaSemana: 0, horaInicio: "00:00:00", horaFin: "23:59:59" });
+  await crear({ diaSemana: 0, horaInicio: "00:00:00", horaFin: "23:59" });
+  await crear({ diaSemana: 2, horaInicio: "09:00", horaFin: "13:00" });
+  await crear({ diaSemana: 3, horaInicio: "09:00:00", horaFin: "13:00:00" });
+  await crear({ diaSemana: 4, horaInicio: "09:15:00", horaFin: "13:00" });
 });
 
 test("Campos protegidos, payload incompleto/vacío y boolean inválido", async () => {

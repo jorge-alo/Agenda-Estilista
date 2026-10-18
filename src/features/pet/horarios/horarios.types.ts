@@ -25,10 +25,10 @@ export function validarId(value: unknown): number {
 }
 
 function hora(value: unknown): string {
-  if (typeof value !== "string" || !/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(value)) {
-    throw new HorarioError(400, "Hora inválida: usar HH:mm o HH:mm:ss");
+  if (typeof value !== "string" || !/^([01]\d|2[0-3]):[0-5]\d(:00)?$/.test(value)) {
+    throw new HorarioError(400, "Hora inválida: usar HH:mm");
   }
-  return value.length === 5 ? `${value}:00` : value;
+  return `${value.slice(0, 5)}:00`;
 }
 
 export function validarIntervalo(inicio: string, fin: string): void {

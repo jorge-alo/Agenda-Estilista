@@ -18,6 +18,8 @@ import {
 } from "./disponibilidad.engine";
 import { contextoTemporalArgentina } from "./disponibilidad.service";
 import type { CalculateAvailabilityInput, HighDemandInterval, MinuteInterval } from "./disponibilidad.types";
+import { validarPayload as validarHorarioPayload } from "../horarios/horarios.types";
+import { validarPayload as validarBloqueoPayload } from "../bloqueos/bloqueos.types";
 
 const ventana = (startMinutes: number, endMinutes: number): MinuteInterval => ({ startMinutes, endMinutes });
 const starts = (intervals: MinuteInterval[]) => intervals.map(interval => interval.startMinutes);
@@ -327,6 +329,30 @@ describe("PET-07B motor puro de disponibilidad", () => {
       });
       assert.deepEqual(result, [ventana(570, 630)]);
     });
+  });
+});
+
+describe("PET-12B.1 contrato horas CRUD → motor (precisión de minutos)", () => {
+  it("todo horario aceptado por el CRUD es representable por el motor sin RangeError", () => {
+    for (const [horaInicio, horaFin] of [["09:00", "13:00"], ["09:00:00", "13:00:00"], ["09:15:00", "11:45"], ["00:00:00", "23:59"]]) {
+      const payload = validarHorarioPayload({ diaSemana: 1, horaInicio, horaFin }, true);
+      assert.doesNotThrow(() => horaAMinutos(payload.horaInicio as string));
+      assert.doesNotThrow(() => horaAMinutos(payload.horaFin as string));
+    }
+    const conSegundosCero = validarHorarioPayload({ diaSemana: 1, horaInicio: "09:15:00", horaFin: "11:00" }, true);
+    assert.equal(horaAMinutos(conSegundosCero.horaInicio as string), 555);
+  });
+
+  it("rechaza en el CRUD las horas con segundos no cero que antes rompían el motor", () => {
+    for (const horaInicio of ["09:00:01", "09:00:30", "09:30:59", "23:59:59"]) {
+      assert.throws(() => validarHorarioPayload({ diaSemana: 1, horaInicio, horaFin: "13:00" }, true));
+      assert.throws(() => validarBloqueoPayload({ fecha: "2099-01-01", esDiaCompleto: false, horaInicio, horaFin: "13:00" }, true));
+    }
+  });
+
+  it("mantiene slots anclados al inicio real de franja :15 y el cierre exacto", () => {
+    assert.deepEqual(starts(calcularSlotsDisponibles({ schedules: [ventana(555, 675)], blocks: [], durationMinutes: 30 })), [555, 585, 615, 645]);
+    assert.deepEqual(calcularSlotsDisponibles({ schedules: [ventana(540, 600)], blocks: [], durationMinutes: 60 }), [ventana(540, 600)]);
   });
 });
 

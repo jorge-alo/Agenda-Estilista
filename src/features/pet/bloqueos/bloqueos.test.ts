@@ -130,7 +130,7 @@ test("Parcial requiere horas y orden; completo rechaza horas simultáneas", asyn
 });
 
 test("Horas estrictas, motivo hasta 255, sin campos protegidos", async () => {
-  for (const horaInicio of ["9:00", "24:00", "-01:00", "10:60", "10:00:60", true, {}, 10]) {
+  for (const horaInicio of ["9:00", "24:00", "-01:00", "10:60", "10:00:60", "10:00:01", "10:00:30", "10:30:59", "23:59:59", true, {}, 10]) {
     assert.equal((await http("POST", base, { ...parcial, horaInicio })).status, 400);
   }
   for (const campo of ["id", "local_id", "activo", "estilista_id", "created_at", "updated_at", "otro"]) {
@@ -138,6 +138,13 @@ test("Horas estrictas, motivo hasta 255, sin campos protegidos", async () => {
   }
   for (const motivo of ["a".repeat(256), 5, true, {}]) assert.equal((await http("POST", base, { ...parcial, motivo })).status, 400);
   await crear({ ...parcial, motivo: "a".repeat(255) });
+});
+
+test("HH:mm y segundos 00 válidos; horas normalizadas a HH:mm:ss", async () => {
+  assert.equal((await crear({ fecha: "2026-10-22", esDiaCompleto: false, horaInicio: "09:00", horaFin: "10:00" })).hora_inicio, "09:00:00");
+  assert.equal((await crear({ fecha: "2026-10-23", esDiaCompleto: false, horaInicio: "09:00:00", horaFin: "10:00:00" })).hora_fin, "10:00:00");
+  assert.equal((await crear({ fecha: "2026-10-24", esDiaCompleto: false, horaInicio: "09:15:00", horaFin: "10:15" })).hora_inicio, "09:15:00");
+  assert.equal((await crear({ fecha: "2026-10-25", esDiaCompleto: false, horaInicio: "22:59", horaFin: "23:59" })).hora_fin, "23:59:00");
 });
 
 test("Adyacencia permitida, intersecciones en ambos sentidos/contenidas rechazadas", async () => {

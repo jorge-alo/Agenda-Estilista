@@ -34,8 +34,8 @@ function fechaValida(value: unknown): string {
 
 function hora(value: unknown): string | null {
   if (value === null) return null;
-  if (typeof value !== "string" || !/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(value)) throw new BloqueoError(400, "Hora inválida: usar HH:mm o HH:mm:ss");
-  return value.length === 5 ? `${value}:00` : value;
+  if (typeof value !== "string" || !/^([01]\d|2[0-3]):[0-5]\d(:00)?$/.test(value)) throw new BloqueoError(400, "Hora inválida: usar HH:mm");
+  return `${value.slice(0, 5)}:00`;
 }
 
 export function validarPayload(body: unknown, crear: boolean): BloqueoPayload {
