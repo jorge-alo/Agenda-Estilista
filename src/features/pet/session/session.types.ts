@@ -1,3 +1,5 @@
+import { isCanonicalOpaqueSecret } from "./opaqueSecret";
+
 export const PET_LOGIN_PURPOSE = "PET_PUBLIC_LOGIN";
 
 export class PetSessionRequestError extends Error {
@@ -16,4 +18,33 @@ export function validateSessionPhone(body: unknown): string {
     throw new PetSessionRequestError(400, "PET_SESSION_REQUEST_INVALID_BODY");
   }
   return data.telefono;
+}
+
+export function validateConsumeToken(body: unknown): string {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new PetSessionRequestError(401, "PET_ACCESS_INVALID");
+  }
+  const data = body as Record<string, unknown>;
+  if (Object.keys(data).length !== 1 || !Object.prototype.hasOwnProperty.call(data, "token") ||
+      !isCanonicalOpaqueSecret(data.token)) {
+    throw new PetSessionRequestError(401, "PET_ACCESS_INVALID");
+  }
+  return data.token;
+}
+
+export interface PetSessionContext {
+  sessionId: number;
+  localId: number;
+  clienteId: number;
+}
+
+export interface ConsumedPetAccess {
+  sessionToken: string;
+  expiresAt: string;
+}
+
+declare module "express-serve-static-core" {
+  interface Request {
+    petSession?: PetSessionContext;
+  }
 }
