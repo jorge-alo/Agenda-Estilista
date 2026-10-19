@@ -5,9 +5,11 @@ import {
   EditarReservaOnlinePayload,
   AsociarResponsablePayload,
   CrearResponsablePayload,
+  MascotaSearchQuery,
+  MascotaSearchResult,
 } from "./mascotas.types";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
-import { normalizeClientPhone } from "../../../shared/phone/normalizeClientPhone";
+import { InvalidClientPhoneError, normalizeClientPhone } from "../../../shared/phone/normalizeClientPhone";
 import { ClientPhoneConflictError, clientPhoneDuplicateKey } from "../../../shared/phone/clientPhoneDuplicate";
 
 export interface Mascota {
@@ -82,6 +84,77 @@ export const listarMascotas = async (localId: number): Promise<Mascota[]> => {
     [localId]
   );
   return rows;
+};
+
+interface MascotaSearchRow extends RowDataPacket {
+  id: number;
+  nombre: string;
+  raza: string | null;
+}
+
+interface ResponsableSearchRow extends RowDataPacket {
+  mascota_id: number;
+  id: number;
+  nombre: string;
+  telefono: string;
+}
+
+// An explicit LIKE escape also keeps backslashes literal, independently of the search text.
+function searchPattern(text: string): string {
+  return `%${text.replace(/[!%_\\]/g, char => `!${char}`)}%`;
+}
+
+export const buscarMascotas = async (localId: number, query: MascotaSearchQuery): Promise<MascotaSearchResult[]> => {
+  const values: Array<string | number> = [localId];
+  let search = "";
+  if (query.q !== "") {
+    const pattern = searchPattern(query.q);
+    values.push(pattern, pattern);
+    let phone = "";
+    if (/^[+\d\s().-]+$/.test(query.q) && /\d/.test(query.q)) {
+      let canonical: string | null = null;
+      try { canonical = normalizeClientPhone(query.q); }
+      catch (error: unknown) { if (!(error instanceof InvalidClientPhoneError)) throw error; }
+      phone = canonical !== null
+        ? " OR c.telefono_normalizado = ?"
+        : " OR c.telefono_normalizado LIKE ? ESCAPE '!'";
+      values.push(canonical ?? searchPattern(query.q.replace(/\D/g, "")));
+      phone += " OR (c.telefono_normalizado IS NULL AND c.telefono LIKE ? ESCAPE '!')";
+      values.push(pattern);
+    }
+    search = ` AND (m.nombre LIKE ? ESCAPE '!' OR EXISTS (
+      SELECT 1 FROM mascota_clientes mc
+      JOIN clientes c ON c.id = mc.cliente_id AND c.local_id = mc.local_id
+      WHERE mc.mascota_id = m.id AND mc.local_id = m.local_id
+        AND (c.nombre LIKE ? ESCAPE '!'${phone})
+    ))`;
+  }
+  values.push(query.limit);
+  const [rows] = await pool.query<MascotaSearchRow[]>(
+    `SELECT m.id, m.nombre, m.raza FROM mascotas m
+     WHERE m.local_id = ? AND m.activo = 1${search}
+     ORDER BY m.nombre ASC, m.id ASC LIMIT ?`,
+    values,
+  );
+  if (rows.length === 0) return [];
+
+  const [responsables] = await pool.query<ResponsableSearchRow[]>(
+    `SELECT mc.mascota_id, c.id, c.nombre, c.telefono
+     FROM mascota_clientes mc
+     JOIN clientes c ON c.id = mc.cliente_id AND c.local_id = mc.local_id
+     WHERE mc.local_id = ? AND mc.mascota_id IN (${rows.map(() => "?").join(",")})
+     ORDER BY mc.mascota_id ASC, c.nombre ASC, c.id ASC`,
+    [localId, ...rows.map(row => row.id)],
+  );
+  const results = rows.map(row => ({ id: row.id, nombre: row.nombre, raza: row.raza,
+    responsables: [] as MascotaSearchResult["responsables"] }));
+  const byId = new Map(results.map(item => [item.id, item]));
+  for (const responsable of responsables) {
+    byId.get(responsable.mascota_id)?.responsables.push({
+      id: responsable.id, nombre: responsable.nombre, telefono: responsable.telefono,
+    });
+  }
+  return results;
 };
 
 export const obtenerMascota = async (localId: number, mascotaId: number): Promise<Mascota | null> => {

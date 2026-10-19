@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { request } from "node:http";
 import type { Server } from "node:http";
@@ -11,6 +12,7 @@ import { normalizeClientPhone } from "../../../shared/phone/normalizeClientPhone
 import { clientPhoneDuplicateKey } from "../../../shared/phone/clientPhoneDuplicate";
 
 const JWT_TEST_SECRET = "SECRETO_JWT_FICTICIO_PET02_SOLO_TESTS";
+const fixtureSuffix = randomUUID();
 
 let petLocalId: number;
 let otherPetLocalId: number;
@@ -86,21 +88,21 @@ before(async () => {
   const [petResult]: any = await pool.query(
     `INSERT INTO locales (nombre, slug, telefono, business_type, suscripcion_estado, suscripcion_vencimiento)
      VALUES (?, ?, ?, ?, ?, DATE_ADD(CURDATE(), INTERVAL 30 DAY))`,
-    ["PET Test Local", "pet-test", "1111111111", "PET_GROOMING", "activo"]
+    ["PET Test Local", `pet-test-${fixtureSuffix}`, "1111111111", "PET_GROOMING", "activo"]
   );
   petLocalId = petResult.insertId;
 
   const [otherPetResult]: any = await pool.query(
     `INSERT INTO locales (nombre, slug, telefono, business_type, suscripcion_estado, suscripcion_vencimiento)
      VALUES (?, ?, ?, ?, ?, DATE_ADD(CURDATE(), INTERVAL 30 DAY))`,
-    ["Other PET Test Local", "other-pet-test", "3333333333", "PET_GROOMING", "activo"]
+    ["Other PET Test Local", `other-pet-test-${fixtureSuffix}`, "3333333333", "PET_GROOMING", "activo"]
   );
   otherPetLocalId = otherPetResult.insertId;
 
   const [beautyResult]: any = await pool.query(
     `INSERT INTO locales (nombre, slug, telefono, business_type, suscripcion_estado, suscripcion_vencimiento)
      VALUES (?, ?, ?, ?, ?, DATE_ADD(CURDATE(), INTERVAL 30 DAY))`,
-    ["Beauty Test Local", "beauty-test", "2222222222", "BEAUTY", "activo"]
+    ["Beauty Test Local", `beauty-test-${fixtureSuffix}`, "2222222222", "BEAUTY", "activo"]
   );
   beautyLocalId = beautyResult.insertId;
 

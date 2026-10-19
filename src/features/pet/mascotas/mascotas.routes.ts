@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   crearMascota,
   listarMascotas,
+  buscarMascotas,
   obtenerMascota,
   editarMascota,
   crearResponsable,
@@ -15,6 +16,7 @@ const mascotasRouter = Router();
 
 mascotasRouter.post("/mascotas", crearMascota);
 mascotasRouter.get("/mascotas", listarMascotas);
+mascotasRouter.get("/mascotas/search", authorizeRole("admin"), buscarMascotas);
 mascotasRouter.get("/mascotas/:id", obtenerMascota);
 mascotasRouter.patch("/mascotas/:id", editarMascota);
 mascotasRouter.patch("/mascotas/:id/reserva-online", authorizeRole("admin"), editarReservaOnline);

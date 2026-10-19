@@ -8,6 +8,8 @@ import {
   validarAsociarResponsable,
   validarCrearResponsable,
   validarReservaOnline,
+  validarBusquedaMascotas,
+  MascotaSearchError,
 } from "./mascotas.types";
 import * as petService from "./mascotas.service";
 
@@ -41,6 +43,22 @@ export const listarMascotas = async (req: AuthRequest, res: Response) => {
     return res.json(mascotas);
   } catch (error: any) {
     return res.status(500).json({ error: "Error listando mascotas" });
+  }
+};
+
+export const buscarMascotas = async (req: AuthRequest, res: Response) => {
+  const localId: unknown = req.user?.localId;
+  if (typeof localId !== "number" || !Number.isSafeInteger(localId) || localId < 1 || localId > 2147483647) {
+    return res.status(401).json({ error: "No autorizado" });
+  }
+  try {
+    const query = validarBusquedaMascotas(req.query);
+    return res.json(await petService.buscarMascotas(localId, query));
+  } catch (error: unknown) {
+    if (error instanceof MascotaSearchError) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
+    }
+    return res.status(500).json({ error: "Error buscando mascotas" });
   }
 };
 

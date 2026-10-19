@@ -8,6 +8,43 @@ export interface CrearMascotaPayload {
   observaciones?: string | null;
 }
 
+export interface MascotaSearchQuery {
+  q: string;
+  limit: number;
+}
+
+export interface MascotaSearchResult {
+  id: number;
+  nombre: string;
+  raza: string | null;
+  responsables: Array<{ id: number; nombre: string; telefono: string }>;
+}
+
+export class MascotaSearchError extends Error {
+  readonly status = 400;
+  readonly code = "PET_MASCOTA_SEARCH_INVALID";
+
+  constructor() {
+    super("Use q vacío o de 2 a 100 caracteres y limit entero entre 1 y 20");
+  }
+}
+
+export function validarBusquedaMascotas(raw: unknown): MascotaSearchQuery {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new MascotaSearchError();
+  const query = raw as Record<string, unknown>;
+  if (Object.keys(query).some(key => /^(q|limit)\[/.test(key))) throw new MascotaSearchError();
+  if (query.q !== undefined && typeof query.q !== "string") throw new MascotaSearchError();
+  const q = typeof query.q === "string" ? query.q.trim() : "";
+  if (q.length === 1 || q.length > 100) throw new MascotaSearchError();
+  let limit = 20;
+  if (query.limit !== undefined) {
+    if (typeof query.limit !== "string" || !/^[1-9]\d?$/.test(query.limit)) throw new MascotaSearchError();
+    limit = Number(query.limit);
+    if (limit > 20) throw new MascotaSearchError();
+  }
+  return { q, limit };
+}
+
 export interface EditarMascotaPayload {
   nombre?: string;
   raza?: string | null;
