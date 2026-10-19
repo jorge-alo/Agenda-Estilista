@@ -22,6 +22,8 @@ let firulaisId: number;
 let duplicateId: number;
 let noResponsibleId: number;
 let legacyId: number;
+let inactiveFirulaisId: number;
+let inactiveResponsibleId: number;
 let anaId: number;
 let juanId: number;
 const initialIds: number[] = [];
@@ -91,7 +93,8 @@ before(async () => {
   duplicateId = await createPet(localId, "Firúláis");
   noResponsibleId = await createPet(localId, "Sin responsable");
   legacyId = await createPet(localId, "Luna legacy");
-  await createPet(localId, "Firúláis inactivo", null, 0);
+  inactiveFirulaisId = await createPet(localId, "Firúláis inactivo", null, 0);
+  inactiveResponsibleId = await createPet(localId, "Coincide inactivo", null, 0);
   for (const name of ["Literal % mascota", "Literal _ mascota", "Literal \\ mascota", "Literal ! mascota", "Literal X mascota", "D'Artagnan"]) {
     await createPet(localId, name);
   }
@@ -103,9 +106,11 @@ before(async () => {
   await link(localId, firulaisId, anaId);
   await link(localId, duplicateId, anaId);
   await link(localId, legacyId, legacyClient);
+  await link(localId, inactiveResponsibleId, anaId);
   const foreignPet = await createPet(foreignLocalId, "Firúláis");
   const foreignClient = await createClient(foreignLocalId, "Exclusivo extranjero", "(011) 15-2345-6789", normalizeClientPhone("+5491123456789"));
   await link(foreignLocalId, foreignPet, foreignClient);
+  await createPet(foreignLocalId, "Exclusivo extranjero inactivo", null, 0);
 
   const app = express();
   app.use("/api/pet/admin", petRouter);
@@ -176,18 +181,52 @@ test("search: fallback textual legacy NULL para display completo y parcial", asy
   }
 });
 
-test("search: sin responsables/raza null válido, DTO mínimo y online false incluido, inactiva excluida", async () => {
-  assert.deepEqual(await search("Sin responsable"), [{ id: noResponsibleId, nombre: "Sin responsable", raza: null, responsables: [] }]);
+test("search: sin responsables/raza null válido, DTO mínimo y activo, inactiva excluida por defecto", async () => {
+  assert.deepEqual(await search("Sin responsable"), [{ id: noResponsibleId, nombre: "Sin responsable", raza: null, activo: 1, responsables: [] }]);
   const items = await search("firulais");
   assert.equal(items.length, 2);
   assert.equal(items[0].raza, "Mestizo");
-  assert.deepEqual(Object.keys(items[0]).sort(), ["id", "nombre", "raza", "responsables"]);
+  assert.equal(items[0].activo, 1);
+  assert.deepEqual(Object.keys(items[0]).sort(), ["activo", "id", "nombre", "raza", "responsables"]);
   assert.deepEqual(Object.keys(items[0].responsables[0]).sort(), ["id", "nombre", "telefono"]);
+});
+
+test("search: estado ausente y activas conservan el contrato previo solo-activas", async () => {
+  const legacy = await http("?q=firu");
+  assert.equal(legacy.status, 200);
+  assert.deepEqual(JSON.parse(legacy.body), await search("firu", { estado: "activas" }));
+  assert.deepEqual((await search("firu")).map(item => item.id), [firulaisId, duplicateId]);
+  assert.deepEqual(await search("Firúláis inactivo"), []);
+});
+
+test("search: estado=inactivas devuelve solo inactivas, incluida búsqueda por responsable/teléfono", async () => {
+  const byName = await search("firu", { estado: "inactivas" });
+  assert.deepEqual(byName.map(item => item.id), [inactiveFirulaisId]);
+  assert.equal(byName[0].activo, 0);
+  const byResponsible = await search("Coincide inactivo", { estado: "inactivas" });
+  assert.deepEqual(byResponsible.map(item => item.id), [inactiveResponsibleId]);
+  assert.deepEqual(byResponsible[0].responsables.map(item => item.id), [anaId]);
+  assert.equal(byResponsible[0].activo, 0);
+  assert.deepEqual((await search("+5491123456789", { estado: "inactivas" })).map(item => item.id), [inactiveResponsibleId]);
+});
+
+test("search: estado=todas devuelve activas e inactivas con DTO íntegro y orden estable", async () => {
+  const items = await search("firu", { estado: "todas" });
+  assert.deepEqual(items.map(item => item.id), [firulaisId, duplicateId, inactiveFirulaisId]);
+  assert.deepEqual(items.map(item => item.activo), [1, 1, 0]);
+  items.forEach(item => assert.deepEqual(Object.keys(item).sort(), ["activo", "id", "nombre", "raza", "responsables"]));
+});
+
+test("search: estado=todas mantiene el máximo de 20", async () => {
+  assert.equal((await search("AA fixture", { estado: "todas" })).length, 20);
 });
 
 test("search: tenant JWT exclusivo incluso con nombres/teléfonos idénticos y localId query ajeno", async () => {
   assert.deepEqual(await search("Exclusivo extranjero", { localId: String(foreignLocalId) }), []);
+  assert.deepEqual(await search("Exclusivo extranjero", { estado: "todas", localId: String(foreignLocalId) }), []);
   assert.deepEqual((await search("firulais", { localId: String(foreignLocalId) })).map(item => item.id), [firulaisId, duplicateId]);
+  assert.deepEqual((await search("firulais", { estado: "todas", localId: String(foreignLocalId) })).map(item => item.id),
+    [firulaisId, duplicateId, inactiveFirulaisId]);
   const foreign = await http("?q=firulais", token(foreignLocalId));
   const items = JSON.parse(foreign.body) as MascotaSearchResult[];
   assert.equal(foreign.status, 200);
@@ -211,6 +250,7 @@ test("search: límites 1/20 válidos, default 20", async () => {
 for (const query of [
   "q=a", "q=%20a%20", `q=${"a".repeat(101)}`, "q=aa&q=bb", "q[x]=aa",
   "limit=21", "limit=0", "limit=-1", "limit=abc", "limit=1.5", "limit=", "limit=1&limit=2", "limit[x]=2",
+  "estado=activa", "estado=inactivos", "estado=", "estado=ACTIVAS", "estado=activas&estado=todas", "estado[x]=todas",
 ]) {
   test(`search: consulta inválida devuelve 400 seguro (${query.slice(0, 30)})`, async () => {
     const result = await http(`?${query}`);
@@ -230,13 +270,15 @@ test("search: longitud 100 aceptada y caracteres LIKE/comillas se buscan literal
 
 test("search service: dos queries constantes para 1 o 20 resultados y una para cero (sin N+1)", async t => {
   const spy = t.mock.method(pool, "query");
-  for (const limit of [1, 20]) {
-    const beforeCount = spy.mock.callCount();
-    const items = await buscarMascotas(localId, { q: "AA fixture", limit });
-    assert.equal(items.length, limit);
-    assert.equal(spy.mock.callCount() - beforeCount, 2);
+  for (const estado of ["activas", "inactivas", "todas"] as const) {
+    for (const limit of [1, 20]) {
+      const beforeCount = spy.mock.callCount();
+      const items = await buscarMascotas(localId, { q: "firu", limit, estado });
+      assert.ok(items.length <= limit);
+      assert.equal(spy.mock.callCount() - beforeCount, 2);
+    }
   }
   const beforeCount = spy.mock.callCount();
-  assert.deepEqual(await buscarMascotas(localId, { q: "no-existe-PET09R", limit: 20 }), []);
+  assert.deepEqual(await buscarMascotas(localId, { q: "no-existe-PET09R", limit: 20, estado: "todas" }), []);
   assert.equal(spy.mock.callCount() - beforeCount, 1);
 });

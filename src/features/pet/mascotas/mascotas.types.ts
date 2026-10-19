@@ -8,15 +8,21 @@ export interface CrearMascotaPayload {
   observaciones?: string | null;
 }
 
+export const MASCOTA_SEARCH_ESTADOS = ["activas", "inactivas", "todas"] as const;
+
+export type MascotaSearchEstado = (typeof MASCOTA_SEARCH_ESTADOS)[number];
+
 export interface MascotaSearchQuery {
   q: string;
   limit: number;
+  estado: MascotaSearchEstado;
 }
 
 export interface MascotaSearchResult {
   id: number;
   nombre: string;
   raza: string | null;
+  activo: number;
   responsables: Array<{ id: number; nombre: string; telefono: string }>;
 }
 
@@ -25,14 +31,14 @@ export class MascotaSearchError extends Error {
   readonly code = "PET_MASCOTA_SEARCH_INVALID";
 
   constructor() {
-    super("Use q vacío o de 2 a 100 caracteres y limit entero entre 1 y 20");
+    super("Use q vacío o de 2 a 100 caracteres, limit entero entre 1 y 20 y estado activas|inactivas|todas");
   }
 }
 
 export function validarBusquedaMascotas(raw: unknown): MascotaSearchQuery {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new MascotaSearchError();
   const query = raw as Record<string, unknown>;
-  if (Object.keys(query).some(key => /^(q|limit)\[/.test(key))) throw new MascotaSearchError();
+  if (Object.keys(query).some(key => /^(q|limit|estado)\[/.test(key))) throw new MascotaSearchError();
   if (query.q !== undefined && typeof query.q !== "string") throw new MascotaSearchError();
   const q = typeof query.q === "string" ? query.q.trim() : "";
   if (q.length === 1 || q.length > 100) throw new MascotaSearchError();
@@ -42,7 +48,14 @@ export function validarBusquedaMascotas(raw: unknown): MascotaSearchQuery {
     limit = Number(query.limit);
     if (limit > 20) throw new MascotaSearchError();
   }
-  return { q, limit };
+  let estado: MascotaSearchEstado = "activas";
+  if (query.estado !== undefined) {
+    if (typeof query.estado !== "string" || !(MASCOTA_SEARCH_ESTADOS as readonly string[]).includes(query.estado)) {
+      throw new MascotaSearchError();
+    }
+    estado = query.estado as MascotaSearchEstado;
+  }
+  return { q, limit, estado };
 }
 
 export interface EditarMascotaPayload {

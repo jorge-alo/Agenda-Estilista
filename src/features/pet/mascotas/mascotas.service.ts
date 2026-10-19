@@ -90,6 +90,7 @@ interface MascotaSearchRow extends RowDataPacket {
   id: number;
   nombre: string;
   raza: string | null;
+  activo: number;
 }
 
 interface ResponsableSearchRow extends RowDataPacket {
@@ -129,10 +130,13 @@ export const buscarMascotas = async (localId: number, query: MascotaSearchQuery)
         AND (c.nombre LIKE ? ESCAPE '!'${phone})
     ))`;
   }
+  const estado = query.estado === "activas"
+    ? " AND m.activo = 1"
+    : query.estado === "inactivas" ? " AND m.activo = 0" : "";
   values.push(query.limit);
   const [rows] = await pool.query<MascotaSearchRow[]>(
-    `SELECT m.id, m.nombre, m.raza FROM mascotas m
-     WHERE m.local_id = ? AND m.activo = 1${search}
+    `SELECT m.id, m.nombre, m.raza, m.activo FROM mascotas m
+     WHERE m.local_id = ?${estado}${search}
      ORDER BY m.nombre ASC, m.id ASC LIMIT ?`,
     values,
   );
@@ -146,7 +150,7 @@ export const buscarMascotas = async (localId: number, query: MascotaSearchQuery)
      ORDER BY mc.mascota_id ASC, c.nombre ASC, c.id ASC`,
     [localId, ...rows.map(row => row.id)],
   );
-  const results = rows.map(row => ({ id: row.id, nombre: row.nombre, raza: row.raza,
+  const results = rows.map(row => ({ id: row.id, nombre: row.nombre, raza: row.raza, activo: row.activo,
     responsables: [] as MascotaSearchResult["responsables"] }));
   const byId = new Map(results.map(item => [item.id, item]));
   for (const responsable of responsables) {

@@ -638,6 +638,122 @@ describe("PET-02B M:N Responsables", () => {
   });
 });
 
+describe("PET-09M.2B autorización admin de las rutas de gestión", () => {
+  function requestFor(method: string, path: string, mascotaId: number, clienteId: number) {
+    return {
+      method,
+      path,
+      body: method === "POST" && path === "/api/pet/admin/mascotas"
+        ? { nombre: "Auth fixture" }
+        : method === "POST" && path === "/api/pet/admin/responsables"
+          ? { nombre: "Auth responsable", telefono: "1123450011" }
+          : method === "POST" && path.endsWith("/responsables")
+            ? { clienteId }
+            : method === "PATCH" && path.endsWith("/reserva-online")
+              ? { reservaOnlineHabilitada: false }
+              : method === "PATCH"
+                ? { nombre: "Auth editada" }
+                : undefined,
+    };
+  }
+
+  test("sin sesión: 401 en todas las rutas de M.2", async () => {
+    const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: "Auth M2" });
+    const mascotaId = JSON.parse(create.body).id as number;
+    const cliente = await httpRequest("POST", "/api/pet/admin/responsables", petAdminToken(), {
+      nombre: "Auth cliente", telefono: "1123450012",
+    });
+    const clienteId = JSON.parse(cliente.body).id as number;
+    const routes = [
+      requestFor("GET", "/api/pet/admin/mascotas", mascotaId, clienteId),
+      requestFor("POST", "/api/pet/admin/mascotas", mascotaId, clienteId),
+      requestFor("GET", "/api/pet/admin/mascotas/search?q=auth", mascotaId, clienteId),
+      requestFor("GET", `/api/pet/admin/mascotas/${mascotaId}`, mascotaId, clienteId),
+      requestFor("PATCH", `/api/pet/admin/mascotas/${mascotaId}`, mascotaId, clienteId),
+      requestFor("PATCH", `/api/pet/admin/mascotas/${mascotaId}/reserva-online`, mascotaId, clienteId),
+      requestFor("POST", "/api/pet/admin/responsables", mascotaId, clienteId),
+      requestFor("POST", `/api/pet/admin/mascotas/${mascotaId}/responsables`, mascotaId, clienteId),
+      requestFor("DELETE", `/api/pet/admin/mascotas/${mascotaId}/responsables/${clienteId}`, mascotaId, clienteId),
+    ];
+    for (const route of routes) {
+      const result = await httpRequest(route.method, route.path, undefined, route.body);
+      assert.equal(result.statusCode, 401, `${route.method} ${route.path}`);
+    }
+  });
+
+  test("JWT PET no admin: 403 en todas las rutas de M.2", async () => {
+    const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: "Auth M2" });
+    const mascotaId = JSON.parse(create.body).id as number;
+    const cliente = await httpRequest("POST", "/api/pet/admin/responsables", petAdminToken(), {
+      nombre: "Auth cliente", telefono: "1123450013",
+    });
+    const clienteId = JSON.parse(cliente.body).id as number;
+    const token = petAdminToken({ rol: "empleado" });
+    const routes = [
+      requestFor("GET", "/api/pet/admin/mascotas", mascotaId, clienteId),
+      requestFor("POST", "/api/pet/admin/mascotas", mascotaId, clienteId),
+      requestFor("GET", "/api/pet/admin/mascotas/search?q=auth", mascotaId, clienteId),
+      requestFor("GET", `/api/pet/admin/mascotas/${mascotaId}`, mascotaId, clienteId),
+      requestFor("PATCH", `/api/pet/admin/mascotas/${mascotaId}`, mascotaId, clienteId),
+      requestFor("PATCH", `/api/pet/admin/mascotas/${mascotaId}/reserva-online`, mascotaId, clienteId),
+      requestFor("POST", "/api/pet/admin/responsables", mascotaId, clienteId),
+      requestFor("POST", `/api/pet/admin/mascotas/${mascotaId}/responsables`, mascotaId, clienteId),
+      requestFor("DELETE", `/api/pet/admin/mascotas/${mascotaId}/responsables/${clienteId}`, mascotaId, clienteId),
+    ];
+    for (const route of routes) {
+      const result = await httpRequest(route.method, route.path, token, route.body);
+      assert.equal(result.statusCode, 403, `${route.method} ${route.path}`);
+    }
+  });
+
+  test("JWT admin BEAUTY: 403 por requirePetBusiness en todas las rutas de M.2", async () => {
+    const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: "Auth M2" });
+    const mascotaId = JSON.parse(create.body).id as number;
+    const cliente = await httpRequest("POST", "/api/pet/admin/responsables", petAdminToken(), {
+      nombre: "Auth cliente", telefono: "1123450014",
+    });
+    const clienteId = JSON.parse(cliente.body).id as number;
+    const routes = [
+      requestFor("GET", "/api/pet/admin/mascotas", mascotaId, clienteId),
+      requestFor("POST", "/api/pet/admin/mascotas", mascotaId, clienteId),
+      requestFor("GET", "/api/pet/admin/mascotas/search?q=auth", mascotaId, clienteId),
+      requestFor("GET", `/api/pet/admin/mascotas/${mascotaId}`, mascotaId, clienteId),
+      requestFor("PATCH", `/api/pet/admin/mascotas/${mascotaId}`, mascotaId, clienteId),
+      requestFor("PATCH", `/api/pet/admin/mascotas/${mascotaId}/reserva-online`, mascotaId, clienteId),
+      requestFor("POST", "/api/pet/admin/responsables", mascotaId, clienteId),
+      requestFor("POST", `/api/pet/admin/mascotas/${mascotaId}/responsables`, mascotaId, clienteId),
+      requestFor("DELETE", `/api/pet/admin/mascotas/${mascotaId}/responsables/${clienteId}`, mascotaId, clienteId),
+    ];
+    for (const route of routes) {
+      const result = await httpRequest(route.method, route.path, beautyAdminToken(), route.body);
+      assert.equal(result.statusCode, 403, `${route.method} ${route.path}`);
+    }
+  });
+
+  test("JWT admin PET: las nueve rutas alcanzan el controller", async () => {
+    const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: "Auth M2" });
+    assert.equal(create.statusCode, 201);
+    const mascotaId = JSON.parse(create.body).id as number;
+
+    assert.equal((await httpRequest("GET", "/api/pet/admin/mascotas", petAdminToken())).statusCode, 200);
+    assert.equal((await httpRequest("GET", "/api/pet/admin/mascotas/search?q=auth", petAdminToken())).statusCode, 200);
+    assert.equal((await httpRequest("GET", `/api/pet/admin/mascotas/${mascotaId}`, petAdminToken())).statusCode, 200);
+    assert.equal((await httpRequest("PATCH", `/api/pet/admin/mascotas/${mascotaId}`, petAdminToken(), { raza: "Auth" })).statusCode, 200);
+    assert.equal((await httpRequest("PATCH", `/api/pet/admin/mascotas/${mascotaId}/reserva-online`, petAdminToken(), {
+      reservaOnlineHabilitada: false,
+    })).statusCode, 200);
+
+    const responsable = await httpRequest("POST", "/api/pet/admin/responsables", petAdminToken(), {
+      nombre: "Auth responsable", telefono: "1123450015",
+    });
+    assert.equal(responsable.statusCode, 201);
+    const clienteId = JSON.parse(responsable.body).id as number;
+
+    assert.equal((await httpRequest("POST", `/api/pet/admin/mascotas/${mascotaId}/responsables`, petAdminToken(), { clienteId })).statusCode, 201);
+    assert.equal((await httpRequest("DELETE", `/api/pet/admin/mascotas/${mascotaId}/responsables/${clienteId}`, petAdminToken())).statusCode, 200);
+  });
+});
+
 describe("PET-11B.1 habilitación administrativa de reserva online", () => {
   const path = (id: number | string) => `/api/pet/admin/mascotas/${id}/reserva-online`;
 
