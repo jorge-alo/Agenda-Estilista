@@ -615,6 +615,25 @@ describe("PET-07C GET disponibilidad admin", () => {
     assert.equal(json<{ duracionMinutos: number }>(twoExtras).duracionMinutos, 85);
   });
 
+  it("M.3B.3 duración catálogo NULL no altera duración efectiva ni semántica inactivo/reactivación", async () => {
+    await pool.query("UPDATE servicios SET duracion = NULL, precio = NULL WHERE id = ? AND local_id = ?", [servicioId, localPet]);
+    try {
+      await agregarHorario("09:00:00", "13:00:00");
+      const url = queryPath({ mascotaId, servicioId, fecha: fechaFutura, extraIds: [extraUnoId, extraDosId] });
+      const result = await http(url);
+      assert.equal(result.status, 200);
+      const data = json<{ duracionMinutos: number; slots: Array<{ horaInicio: string; horaFin: string }> }>(result);
+      assert.equal(data.duracionMinutos, 85);
+      assert.deepEqual(data.slots[0], { horaInicio: "09:00", horaFin: "10:25" });
+      await pool.query("UPDATE servicios SET activo = 0 WHERE id = ? AND local_id = ?", [servicioId, localPet]);
+      assert.equal((await http(url)).status, 409);
+      await pool.query("UPDATE servicios SET activo = 1 WHERE id = ? AND local_id = ?", [servicioId, localPet]);
+      assert.deepEqual(json(await http(url)), data);
+    } finally {
+      await pool.query("UPDATE servicios SET duracion = 99, activo = 1 WHERE id = ? AND local_id = ?", [servicioId, localPet]);
+    }
+  });
+
   it("devuelve vacío sin horarios y calcula franjas únicas y múltiples", async () => {
     assert.deepEqual(json<{ slots: unknown[] }>(await http(queryPath({ mascotaId, servicioId, fecha: fechaFutura }))).slots, []);
     await agregarHorario("09:00:00", "10:00:00");

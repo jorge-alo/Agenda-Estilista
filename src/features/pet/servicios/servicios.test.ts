@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { request, type Server } from "node:http";
-import { before, beforeEach, after, test } from "node:test";
+import { before, beforeEach, after, afterEach, test } from "node:test";
 import express from "express";
 import jwt from "jsonwebtoken";
 import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { pool } from "../../../config/db";
 import router from "../pet.routes";
 import { ServiciosRouter } from "../../servicios/servicio.routes";
+import { sanitizedErrorMiddleware } from "../../../middlewares/sanitizedError.middleware";
+import * as catalogoService from "./servicios.service";
+import { validarCrearServicio, validarEditarServicio, type ServicioCatalogo } from "./servicios.types";
 
 const secret = "PET03_FICTICIO_EXCLUSIVO_TESTS";
 const locales: number[] = [];
@@ -20,6 +23,8 @@ let otroServicio: number;
 let inactivo: number;
 const base = "/api/pet/admin";
 const path = () => `${base}/mascotas/${mascota}/servicios`;
+const catalogo = `${base}/servicios`;
+const creados: Array<{ id: number; localId: number }> = [];
 
 async function insert(sql: string, values: unknown[]): Promise<number> {
   const [result] = await pool.query<ResultSetHeader>(sql, values);
@@ -43,7 +48,7 @@ async function http(method: string, url: string, body?: unknown, localId: number
 }
 
 before(async () => {
-  for (const business of ["PET_GROOMING", "PET_GROOMING", "BEAUTY"]) {
+  for (const business of ["PET_GROOMING", "PET_GROOMING", "BEAUTY", "PET_GROOMING"]) {
     locales.push(await insert("INSERT INTO locales (nombre, business_type) VALUES (?, ?)", ["Fixture PET03", business]));
   }
   mascota = await insert("INSERT INTO mascotas (nombre, local_id) VALUES (?, ?)", ["Rocky", locales[0]]);
@@ -52,9 +57,10 @@ before(async () => {
   otroServicio = await insert("INSERT INTO servicios (nombre, duracion, local_id) VALUES (?, ?, ?)", ["Otro", 30, locales[1]]);
   inactivo = await insert("INSERT INTO servicios (nombre, duracion, local_id, activo) VALUES (?, ?, ?, 0)", ["Inactivo", 35, locales[0]]);
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: "1mb" }));
   app.use(base, router);
   app.use("/api/servicios", ServiciosRouter);
+  app.use(sanitizedErrorMiddleware);
   server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -66,8 +72,17 @@ beforeEach(async t => {
   assert.ok("mock" in t);
   t.mock.property(process, "env", { JWT_SECRET: secret });
   for (const localId of locales) await pool.query("DELETE FROM mascota_servicios WHERE local_id = ?", [localId]);
-  await pool.query("UPDATE servicios SET activo = 1 WHERE id = ? AND local_id = ?", [servicio, locales[0]]);
+  await pool.query("UPDATE servicios SET nombre = 'Baño', activo = 1, duracion = 25, precio = NULL WHERE id = ? AND local_id = ?", [servicio, locales[0]]);
   await pool.query("UPDATE mascotas SET activo = 1 WHERE id = ? AND local_id = ?", [mascota, locales[0]]);
+});
+
+afterEach(async () => {
+  for (const { id, localId } of creados) {
+    await pool.query("DELETE FROM servicios WHERE id = ? AND local_id = ?", [id, localId]);
+    const [rows] = await pool.query<RowDataPacket[]>("SELECT id FROM servicios WHERE id = ? AND local_id = ?", [id, localId]);
+    assert.equal(rows.length, 0, "Fixture catálogo M.3B.3 limpiada por ID y tenant exactos");
+  }
+  creados.length = 0;
 });
 
 after(async () => {
@@ -125,16 +140,15 @@ for (const [label, tenant, rol, status] of [
 test("Catálogo tenant incluye activos/inactivos e ignora local_id de query", async () => {
   const result = await http("GET", `${base}/servicios?local_id=${locales[1]}`);
   assert.equal(result.status, 200);
-  const rows = JSON.parse(result.body) as Array<{ id: number; activo: number; duracion: number }>;
-  assert.deepEqual(Object.keys(rows[0]).sort(), ["activo", "duracion", "id", "nombre", "precio"]);
+  const rows = JSON.parse(result.body) as ServicioCatalogo[];
+  for (const row of rows) assert.deepEqual(Object.keys(row).sort(), ["activo", "id", "nombre"]);
   assert.deepEqual(rows.map(r => r.id).sort((a, b) => a - b), [servicio, inactivo]);
   assert.equal(rows.find(r => r.id === inactivo)?.activo, 0);
-  assert.equal(rows.find(r => r.id === servicio)?.duracion, 25);
+  assert.deepEqual(rows.map(r => r.id), [servicio, inactivo]);
 });
 
-test("M.3B.1 todavía no publica POST/PATCH de catálogo Servicios PET", async () => {
-  assert.equal((await http("POST", `${base}/servicios`, { nombre: "No crear todavía" })).status, 404);
-  assert.equal((await http("PATCH", `${base}/servicios/${servicio}`, { nombre: "No editar todavía" })).status, 404);
+test("M.3B.3 catálogo no incorpora hard delete PET", async () => {
+  assert.equal((await http("DELETE", `${catalogo}/${servicio}`)).status, 404);
 });
 
 test("Asigna duración explícita y conserva duración del catálogo", async () => {
@@ -266,4 +280,328 @@ test("M.3B.1 legacy rechaza hard delete PET; SQL CASCADE conserva integridad", a
   await pool.query("DELETE FROM servicios WHERE id = ? AND local_id = ?", [id, locales[0]]);
   const [rows] = await pool.query<RowDataPacket[]>("SELECT * FROM mascota_servicios WHERE servicio_id = ? AND local_id = ?", [id, locales[0]]);
   assert.equal(rows.length, 0);
+});
+
+async function crearCatalogo(nombre: string, localId = locales[0]): Promise<ServicioCatalogo> {
+  const result = await http("POST", catalogo, { nombre }, localId);
+  assert.equal(result.status, 201, result.body);
+  const dto = JSON.parse(result.body) as ServicioCatalogo;
+  creados.push({ id: dto.id, localId });
+  assert.deepEqual(Object.keys(dto).sort(), ["activo", "id", "nombre"]);
+  return dto;
+}
+
+async function leerServicio(id = servicio, localId = locales[0]) {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    "SELECT id, nombre, activo, duracion, precio, local_id, created_at FROM servicios WHERE id = ? AND local_id = ?", [id, localId]
+  );
+  assert.equal(rows.length, 1);
+  return { ...rows[0] };
+}
+
+function error400(result: { status: number; body: string }, mensaje?: string) {
+  assert.equal(result.status, 400, result.body);
+  const body = JSON.parse(result.body) as { error: string };
+  assert.deepEqual(Object.keys(body), ["error"]);
+  assert.equal(typeof body.error, "string");
+  if (mensaje) assert.equal(body.error, mensaje);
+}
+
+test("M.3B.3 GET sin filas devuelve [] y no usa tenant de query", async () => {
+  const result = await http("GET", `${catalogo}?local_id=${locales[0]}&localId=${locales[0]}`, undefined, locales[3]);
+  assert.equal(result.status, 200);
+  assert.deepEqual(JSON.parse(result.body), []);
+});
+
+test("M.3B.3 GET ordena nombre ASC e id ASC, incluidos homónimos", async () => {
+  const z = await crearCatalogo("ZZZ");
+  const a = await crearCatalogo("AAA");
+  const a2 = await crearCatalogo("AAA");
+  const result = await http("GET", catalogo);
+  assert.equal(result.status, 200);
+  const rows = JSON.parse(result.body) as ServicioCatalogo[];
+  assert.deepEqual(rows.map(row => row.id), [a.id, a2.id, servicio, inactivo, z.id]);
+  for (const row of rows) assert.deepEqual(Object.keys(row).sort(), ["activo", "id", "nombre"]);
+});
+
+test("M.3B.3 activo NULL legacy se proyecta 0 sin normalizar al leer ni editar nombre", async () => {
+  await pool.query("UPDATE servicios SET activo = NULL WHERE id = ? AND local_id = ?", [servicio, locales[0]]);
+  const rows = JSON.parse((await http("GET", catalogo)).body) as ServicioCatalogo[];
+  assert.equal(rows.find(row => row.id === servicio)?.activo, 0);
+  assert.equal((await leerServicio()).activo, null);
+  const result = await http("PATCH", `${catalogo}/${servicio}`, { nombre: "Legacy NULL" });
+  assert.equal(result.status, 200);
+  assert.deepEqual(JSON.parse(result.body), { id: servicio, nombre: "Legacy NULL", activo: 0 });
+  assert.equal((await leerServicio()).activo, null);
+});
+
+for (const nombre of ["Baño y corte", "  Con trim  ", "A", "A".repeat(100), "🐾".repeat(100)]) {
+  test(`M.3B.3 POST válido (${[...nombre].length} caracteres) persiste NULLs, activo y tenant JWT`, async () => {
+    const dto = await crearCatalogo(nombre);
+    assert.deepEqual(dto, { id: dto.id, nombre: nombre.trim(), activo: 1 });
+    const row = await leerServicio(dto.id);
+    assert.equal(row.nombre, nombre.trim());
+    assert.equal(row.duracion, null);
+    assert.equal(row.precio, null);
+    assert.equal(row.local_id, locales[0]);
+    assert.equal(row.activo, 1);
+    const [relations] = await pool.query<RowDataPacket[]>("SELECT * FROM mascota_servicios WHERE servicio_id = ? AND local_id = ?", [dto.id, locales[0]]);
+    assert.deepEqual(relations, []);
+  });
+}
+
+test("M.3B.3 POST nombres duplicados mismo tenant: dos 201 con IDs distintos", async () => {
+  const first = await crearCatalogo("Duplicado permitido");
+  const second = await crearCatalogo("Duplicado permitido");
+  assert.notEqual(first.id, second.id);
+  assert.equal((await leerServicio(first.id)).nombre, (await leerServicio(second.id)).nombre);
+});
+
+test("M.3B.3 POST toma JWT aunque query indique otro tenant", async () => {
+  const result = await http("POST", `${catalogo}?local_id=${locales[0]}`, { nombre: "Tenant JWT" }, locales[1]);
+  assert.equal(result.status, 201);
+  const dto = JSON.parse(result.body) as ServicioCatalogo;
+  creados.push({ id: dto.id, localId: locales[1] });
+  assert.equal((await leerServicio(dto.id, locales[1])).local_id, locales[1]);
+  assert.equal((JSON.parse((await http("GET", catalogo)).body) as ServicioCatalogo[]).some(row => row.id === dto.id), false);
+});
+
+for (const nombre of [undefined, "", "   ", "A".repeat(101), "🐾".repeat(101), 123, null, false, {}, []]) {
+  test(`M.3B.3 nombre inválido POST/PATCH: ${JSON.stringify(nombre)}`, async () => {
+    const before = await leerServicio();
+    error400(await http("POST", catalogo, { nombre }));
+    error400(await http("PATCH", `${catalogo}/${servicio}`, { nombre }));
+    assert.deepEqual(await leerServicio(), before);
+  });
+}
+
+for (const body of [[], ["nombre"], null, "texto", 1, true]) {
+  test(`M.3B.3 validadores rechazan body no objeto: ${JSON.stringify(body)}`, () => {
+    for (const validar of [validarCrearServicio, validarEditarServicio]) {
+      assert.throws(() => validar(body), { status: 400, message: "Payload inválido" });
+    }
+  });
+}
+
+test("M.3B.3 HTTP rechaza body array y body ausente con {error}", async () => {
+  for (const body of [[], undefined]) {
+    error400(await http("POST", catalogo, body));
+    error400(await http("PATCH", `${catalogo}/${servicio}`, body));
+  }
+});
+
+for (const body of [null, "texto", 123, true]) {
+  test(`M.3B.3 HTTP primitivo ${JSON.stringify(body)}: excepción aprobada 400 INVALID_JSON sin escrituras`, async t => {
+    t.mock.method(console, "error", () => undefined);
+    const snapshot = async () => (await pool.query<RowDataPacket[]>(
+      "SELECT * FROM servicios WHERE local_id IN (?, ?, ?, ?) ORDER BY id", locales
+    ))[0];
+    const before = await snapshot();
+    for (const [method, url] of [["POST", catalogo], ["PATCH", `${catalogo}/${servicio}`]]) {
+      const result = await http(method, url, body);
+      assert.equal(result.status, 400, result.body);
+      assert.deepEqual(JSON.parse(result.body), { code: "INVALID_JSON" });
+      assert.deepEqual(await snapshot(), before);
+    }
+  });
+}
+
+for (const campo of ["duracion", "precio", "local_id", "localId", "business_type", "id", "created_at", "extra"]) {
+  test(`M.3B.3 POST/PATCH rechazan campo ${campo} sin escritura`, async () => {
+    const before = await leerServicio();
+    error400(await http("POST", catalogo, { nombre: "No persistir", [campo]: 1 }), "Campos no permitidos");
+    error400(await http("PATCH", `${catalogo}/${servicio}`, { nombre: "No editar", [campo]: 1 }), "Campos no permitidos");
+    assert.deepEqual(await leerServicio(), before);
+  });
+}
+
+test("M.3B.3 POST rechaza activo incluso boolean", async () => {
+  for (const activo of [true, false, 1]) error400(await http("POST", catalogo, { nombre: "No crear", activo }), "Campos no permitidos");
+});
+
+for (const [label, tenant, rol, status] of [
+  ["sin auth", -1, "admin", 401], ["BEAUTY", 2, "admin", 403],
+  ["PET no-admin", 0, "estilista", 403], ["PET superadmin", 0, "superadmin", 403],
+] as const) {
+  test(`M.3B.3 ${label}: GET/POST/PATCH protegidos sin escrituras`, async () => {
+    const snapshot = async () => (await pool.query<RowDataPacket[]>("SELECT * FROM servicios WHERE local_id IN (?, ?, ?, ?) ORDER BY id", locales))[0];
+    const before = await snapshot();
+    for (const [method, url, body] of [
+      ["GET", catalogo, undefined], ["POST", catalogo, { nombre: "Denegado" }],
+      ["PATCH", `${catalogo}/${servicio}`, { nombre: "Denegado", activo: false }],
+    ] as const) {
+      const result = await http(method, url, body, tenant < 0 ? null : locales[tenant], rol);
+      assert.equal(result.status, status, result.body);
+      assert.deepEqual(Object.keys(JSON.parse(result.body)), ["error"]);
+      assert.deepEqual(await snapshot(), before);
+    }
+  });
+}
+
+for (const payload of [
+  { nombre: "  Nuevo nombre  " }, { activo: false }, { nombre: "Ambos", activo: false },
+  { nombre: "Baño" }, { activo: true }, { nombre: "N" }, { nombre: "N".repeat(100) },
+]) {
+  test(`M.3B.3 PATCH parcial/no-op preserva legacy: ${JSON.stringify(payload)}`, async () => {
+    await pool.query("UPDATE servicios SET duracion = 77, precio = 123.45 WHERE id = ? AND local_id = ?", [servicio, locales[0]]);
+    const before = await leerServicio();
+    const result = await http("PATCH", `${catalogo}/${servicio}`, payload);
+    assert.equal(result.status, 200, result.body);
+    const nombre = payload.nombre?.trim() ?? before.nombre;
+    const activo = payload.activo === undefined ? before.activo : Number(payload.activo);
+    assert.deepEqual(JSON.parse(result.body), { id: servicio, nombre, activo });
+    assert.deepEqual(await leerServicio(), { ...before, nombre, activo });
+  });
+}
+
+test("M.3B.3 PATCH reactiva y no-op de inactivo; nombre omitido se preserva", async () => {
+  const before = await leerServicio(inactivo);
+  for (const activo of [false, true, true, false]) {
+    const result = await http("PATCH", `${catalogo}/${inactivo}`, { activo });
+    assert.equal(result.status, 200, result.body);
+    assert.deepEqual(JSON.parse(result.body), { id: inactivo, nombre: before.nombre, activo: Number(activo) });
+    assert.deepEqual(await leerServicio(inactivo), { ...before, activo: Number(activo) });
+  }
+});
+
+test("M.3B.3 PATCH permite nombre duplicado y conserva NULLs de nuevas altas", async () => {
+  const dto = await crearCatalogo("Nuevo");
+  const result = await http("PATCH", `${catalogo}/${dto.id}`, { nombre: "Baño", activo: false });
+  assert.equal(result.status, 200, result.body);
+  const row = await leerServicio(dto.id);
+  assert.equal(row.duracion, null);
+  assert.equal(row.precio, null);
+  assert.equal(row.local_id, locales[0]);
+});
+
+for (const activo of [0, 1, "true", "false", null, [], {}]) {
+  test(`M.3B.3 PATCH activo inválido: ${JSON.stringify(activo)}`, async () => {
+    const before = await leerServicio();
+    error400(await http("PATCH", `${catalogo}/${servicio}`, { activo }), "activo debe ser boolean");
+    assert.deepEqual(await leerServicio(), before);
+  });
+}
+
+test("M.3B.3 PATCH vacío es 400", async () => {
+  error400(await http("PATCH", `${catalogo}/${servicio}`, {}), "No hay campos para actualizar");
+});
+
+for (const id of ["0", "-1", "1.5", "1abc", "1e2", "2147483648", "9007199254740993"]) {
+  test(`M.3B.3 PATCH ID estricto: ${id}`, async () => {
+    error400(await http("PATCH", `${catalogo}/${id}`, { activo: false }), "ID inválido");
+  });
+}
+
+test("M.3B.3 PATCH ajeno/inexistente indistinguibles: 404 Servicio no encontrado", async () => {
+  const before = await leerServicio(otroServicio, locales[1]);
+  for (const id of [otroServicio, 2147483647]) {
+    const result = await http("PATCH", `${catalogo}/${id}`, { nombre: "No editar", activo: false });
+    assert.equal(result.status, 404);
+    assert.deepEqual(JSON.parse(result.body), { error: "Servicio no encontrado" });
+  }
+  assert.deepEqual(await leerServicio(otroServicio, locales[1]), before);
+});
+
+test("M.3B.3 errores inesperados GET/POST/PATCH conservan 500 genérico {error}", async t => {
+  const failure = () => { throw new Error("Detalle interno que no debe salir"); };
+  t.mock.method(catalogoService, "listarCatalogo", failure);
+  t.mock.method(catalogoService, "crearServicio", failure);
+  t.mock.method(catalogoService, "editarServicio", failure);
+  for (const [method, url, body] of [
+    ["GET", catalogo, undefined], ["POST", catalogo, { nombre: "Error" }],
+    ["PATCH", `${catalogo}/${servicio}`, { activo: false }],
+  ] as const) {
+    const result = await http(method, url, body);
+    assert.equal(result.status, 500);
+    assert.deepEqual(JSON.parse(result.body), { error: "Error gestionando servicios de mascota" });
+  }
+});
+
+test("M.3B.3 catálogo NULL usa relación explícita; inactivar/reactivar conserva configuración", async () => {
+  const dto = await crearCatalogo("Servicio sin duración genérica");
+  const url = `${path()}/${dto.id}`;
+  error400(await http("POST", path(), { servicioId: dto.id }));
+  assert.equal((await http("POST", path(), { servicioId: dto.id, duracionMinutos: 45 })).status, 201);
+  assert.equal((await http("PATCH", `${catalogo}/${dto.id}`, { activo: false })).status, 200);
+  assert.deepEqual(JSON.parse((await http("GET", path())).body), [{ id: dto.id, nombre: dto.nombre, activo: 0, duracion_minutos: 45 }]);
+  assert.equal((await http("POST", `${base}/mascotas/${otraMascota}/servicios`, { servicioId: dto.id, duracionMinutos: 50 })).status, 404);
+  assert.equal((await http("POST", path(), { servicioId: dto.id, duracionMinutos: 50 })).status, 409);
+  assert.equal((await http("PATCH", url, { duracionMinutos: 50 })).status, 200);
+  assert.equal((await http("PATCH", `${catalogo}/${dto.id}`, { activo: true })).status, 200);
+  assert.deepEqual(JSON.parse((await http("GET", path())).body), [{ id: dto.id, nombre: dto.nombre, activo: 1, duracion_minutos: 50 }]);
+  assert.equal((await leerServicio(dto.id)).duracion, null);
+  assert.equal((await http("DELETE", url)).status, 204);
+  assert.deepEqual(JSON.parse((await http("GET", path())).body), []);
+});
+
+test("M.3B.3 dos PATCH parciales serializan lectura/escritura con lock InnoDB sin estado stale", { timeout: 20000 }, async t => {
+  function barrier<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>(done => { resolve = done; });
+    return { promise, resolve };
+  }
+  const locked = barrier<void>();
+  const release = barrier<void>();
+  const secondAttempt = barrier<number>();
+  let firstSeen = false;
+  let secondAcquired = false;
+  let polling = true;
+  const originalGetConnection = pool.getConnection.bind(pool);
+  t.mock.method(pool, "getConnection", async () => {
+    const conn = await originalGetConnection();
+    const originalQuery = conn.query.bind(conn);
+    t.mock.method(conn, "query", ((...args: Parameters<typeof conn.query>) => {
+      const sql: unknown = args[0];
+      if (typeof sql === "string" && sql.includes("SELECT id, nombre, activo FROM servicios WHERE id = ? AND local_id = ? FOR UPDATE")) {
+        const result = originalQuery(...args);
+        if (!firstSeen) {
+          firstSeen = true;
+          return result.then(async rows => { locked.resolve(); await release.promise; return rows; });
+        }
+        secondAttempt.resolve(conn.threadId);
+        return result.then(rows => { secondAcquired = true; return rows; });
+      }
+      return originalQuery(...args);
+    }) as typeof conn.query);
+    return conn;
+  });
+  const first = http("PATCH", `${catalogo}/${servicio}`, { nombre: "Nombre concurrente" });
+  let second: ReturnType<typeof http> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const watchdog = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error("PATCH no alcanzó las barreras del lock de fila")), 15000);
+  });
+  try {
+    await Promise.race([locked.promise, watchdog]);
+    second = http("PATCH", `${catalogo}/${servicio}`, { activo: false });
+    const threadId = await Promise.race([secondAttempt.promise, watchdog]);
+    await Promise.race([(async () => {
+      while (polling) {
+        const [rows] = await pool.query<RowDataPacket[]>(
+          `SELECT COUNT(*) AS total FROM performance_schema.data_lock_waits w
+           JOIN performance_schema.threads t ON t.THREAD_ID = w.REQUESTING_THREAD_ID
+           WHERE t.PROCESSLIST_ID = ?`, [threadId]
+        );
+        if (rows[0].total > 0) return;
+        await new Promise<void>(done => setImmediate(done));
+      }
+    })(), watchdog]);
+    assert.equal(secondAcquired, false, "La segunda lectura debe esperar el commit de la primera");
+  } finally {
+    polling = false;
+    release.resolve();
+    if (timer) clearTimeout(timer);
+    await Promise.all([first, second]);
+  }
+  assert.equal((await first).status, 200);
+  assert.ok(second);
+  const result = await second;
+  assert.equal(result.status, 200, result.body);
+  assert.deepEqual(JSON.parse(result.body), { id: servicio, nombre: "Nombre concurrente", activo: 0 });
+  const row = await leerServicio();
+  assert.equal(row.nombre, "Nombre concurrente");
+  assert.equal(row.activo, 0);
+  assert.equal(row.duracion, 25);
+  assert.equal(row.precio, null);
+  assert.equal(row.local_id, locales[0]);
 });

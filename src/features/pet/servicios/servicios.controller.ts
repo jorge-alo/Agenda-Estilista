@@ -1,7 +1,7 @@
 import type { Response } from "express";
 import type { AuthRequest } from "../../../middlewares/auth.middleware";
 import * as service from "./servicios.service";
-import { PetServicioError, validarDuracion, validarId } from "./servicios.types";
+import { PetServicioError, validarDuracion, validarId, validarCrearServicio, validarEditarServicio } from "./servicios.types";
 
 function localDelJwt(req: AuthRequest): number {
   if (!req.user?.localId) throw new PetServicioError(401, "No autorizado");
@@ -16,6 +16,23 @@ function responderError(res: Response, error: unknown) {
 export async function listarCatalogo(req: AuthRequest, res: Response) {
   try {
     return res.json(await service.listarCatalogo(localDelJwt(req)));
+  } catch (error: unknown) { return responderError(res, error); }
+}
+
+export async function crearServicio(req: AuthRequest, res: Response) {
+  try {
+    const localId = localDelJwt(req);
+    const payload = validarCrearServicio(req.body);
+    return res.status(201).json(await service.crearServicio(localId, payload.nombre));
+  } catch (error: unknown) { return responderError(res, error); }
+}
+
+export async function editarServicio(req: AuthRequest, res: Response) {
+  try {
+    const localId = localDelJwt(req);
+    const servicioId = validarId(req.params.servicioId);
+    const payload = validarEditarServicio(req.body);
+    return res.json(await service.editarServicio(localId, servicioId, payload));
   } catch (error: unknown) { return responderError(res, error); }
 }
 

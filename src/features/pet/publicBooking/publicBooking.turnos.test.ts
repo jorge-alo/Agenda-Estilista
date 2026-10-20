@@ -105,6 +105,17 @@ test("PET-12E éxito: 201 mínimo, activo, snapshots personalizados, extras y se
   assert.equal(logs.length, 0);
 });
 
+test("M.3B.3 reserva pública con catálogo NULL usa relación y extras explícitos", async () => {
+  const f = await fixture();
+  await q("UPDATE servicios SET duracion = NULL, precio = NULL WHERE id = ? AND local_id = ?", [f.servicioId, f.localId]);
+  const result = await post(f, body(f, { extraIds: f.extraIds }));
+  assert.equal(result.status, 201);
+  assert.equal(record(result).horaFin, "11:40");
+  const [row] = await q<RowDataPacket[]>(
+    "SELECT duracion_servicio_snapshot FROM turnos WHERE id = ? AND local_id = ?", [record(result).id, f.localId]);
+  assert.equal(row.duracion_servicio_snapshot, 60);
+});
+
 test("PET-12E mascota compartida: cada responsable conserva su propia autoridad", async () => {
   const f = await fixture();
   const client = await q<ResultSetHeader>(

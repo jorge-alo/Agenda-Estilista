@@ -375,6 +375,19 @@ test("201 guarda turno activo, responsable y snapshots del servicio y dos extras
   ]);
 });
 
+test("M.3B.3 catálogo NULL reserva con duración explícita y extras, sin fallback", async () => {
+  await pool.query("UPDATE servicios SET duracion = NULL, precio = NULL WHERE id = ? AND local_id = ?", [servicioId, localId]);
+  const availability = await getDisponibilidadPet();
+  assert.equal(availability.status, 200);
+  assert.deepEqual(availability.data.slots[0], { horaInicio: "09:00", horaFin: "10:00" });
+  const result = await post(body({ extraIds: [extraId, extraDosId] }));
+  assert.equal(result.status, 201);
+  assert.equal(result.data.horaFin, "10:40");
+  const [rows] = await pool.query<RowDataPacket[]>(
+    "SELECT duracion_servicio_snapshot FROM turnos WHERE id = ? AND local_id = ?", [result.data.id, localId]);
+  assert.equal(rows[0].duracion_servicio_snapshot, 60);
+});
+
 test("sin extras crea un turno sin detalles; repite el mismo slot y recibe 409", async () => {
   assert.equal((await post()).status, 201);
   const repeated = await post();
