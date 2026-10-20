@@ -1,0 +1,2 @@
+ALTER TABLE servicios
+  MODIFY COLUMN duracion INT NULL;
