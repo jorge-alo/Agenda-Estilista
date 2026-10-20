@@ -26,8 +26,8 @@ async function insert(sql: string, values: unknown[]): Promise<number> {
   return result.insertId;
 }
 
-async function http(method: string, url: string, body?: unknown, localId: number | null = locales[0]) {
-  const token = localId === null ? undefined : jwt.sign({ userId: 1, rol: "admin", localId }, secret, { expiresIn: "1m" });
+async function http(method: string, url: string, body?: unknown, localId: number | null = locales[0], rol = "admin") {
+  const token = localId === null ? undefined : jwt.sign({ userId: 1, rol, localId }, secret, { expiresIn: "1m" });
   return new Promise<{ status: number; body: string }>((resolve, reject) => {
     const req = request({ hostname: "127.0.0.1", port, method, path: url,
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) } }, res => {
@@ -97,13 +97,44 @@ for (const [label, tenant, status] of [["PET", 0, 200], ["BEAUTY", 2, 403], ["si
   });
 }
 
+for (const [label, tenant, rol, status] of [
+  ["sin auth", -1, "admin", 401], ["BEAUTY", 2, "admin", 403],
+  ["PET no-admin", 0, "estilista", 403], ["PET superadmin", 0, "superadmin", 403],
+] as const) {
+  test(`M.3B.1 ${label}: protege las cinco rutas de servicios sin modificar configuración`, async () => {
+    await asignar();
+    const snapshot = async () => {
+      const [catalogo] = await pool.query<RowDataPacket[]>("SELECT * FROM servicios WHERE local_id = ? ORDER BY id", [locales[0]]);
+      const [relaciones] = await pool.query<RowDataPacket[]>("SELECT * FROM mascota_servicios WHERE local_id = ? ORDER BY mascota_id, servicio_id", [locales[0]]);
+      return { catalogo, relaciones };
+    };
+    const previo = await snapshot();
+    const routes: Array<[string, string, unknown?]> = [
+      ["GET", `${base}/servicios`], ["GET", path()],
+      ["POST", path(), { servicioId: inactivo, duracionMinutos: 60 }],
+      ["PATCH", `${path()}/${servicio}`, { duracionMinutos: 90 }],
+      ["DELETE", `${path()}/${servicio}`],
+    ];
+    for (const [method, url, body] of routes) {
+      assert.equal((await http(method, url, body, tenant < 0 ? null : locales[tenant], rol)).status, status);
+      assert.deepEqual(await snapshot(), previo);
+    }
+  });
+}
+
 test("Catálogo tenant incluye activos/inactivos e ignora local_id de query", async () => {
   const result = await http("GET", `${base}/servicios?local_id=${locales[1]}`);
   assert.equal(result.status, 200);
   const rows = JSON.parse(result.body) as Array<{ id: number; activo: number; duracion: number }>;
+  assert.deepEqual(Object.keys(rows[0]).sort(), ["activo", "duracion", "id", "nombre", "precio"]);
   assert.deepEqual(rows.map(r => r.id).sort((a, b) => a - b), [servicio, inactivo]);
   assert.equal(rows.find(r => r.id === inactivo)?.activo, 0);
   assert.equal(rows.find(r => r.id === servicio)?.duracion, 25);
+});
+
+test("M.3B.1 todavía no publica POST/PATCH de catálogo Servicios PET", async () => {
+  assert.equal((await http("POST", `${base}/servicios`, { nombre: "No crear todavía" })).status, 404);
+  assert.equal((await http("PATCH", `${base}/servicios/${servicio}`, { nombre: "No editar todavía" })).status, 404);
 });
 
 test("Asigna duración explícita y conserva duración del catálogo", async () => {
@@ -226,10 +257,13 @@ test("MySQL CASCADE mascota limpia la relación", async () => {
   assert.equal(rows.length, 0);
 });
 
-test("Hard delete compartido de servicio limpia configuración mediante CASCADE", async () => {
+test("M.3B.1 legacy rechaza hard delete PET; SQL CASCADE conserva integridad", async () => {
   const id = await insert("INSERT INTO servicios (nombre, duracion, local_id) VALUES (?, ?, ?)", ["Cascade", 25, locales[0]]);
   await pool.query("INSERT INTO mascota_servicios VALUES (?, ?, ?, 60)", [locales[0], mascota, id]);
-  assert.equal((await http("DELETE", `/api/servicios/${id}`)).status, 200);
+  assert.equal((await http("DELETE", `/api/servicios/${id}`)).status, 403);
+  const [conservadas] = await pool.query<RowDataPacket[]>("SELECT * FROM mascota_servicios WHERE servicio_id = ? AND local_id = ?", [id, locales[0]]);
+  assert.equal(conservadas.length, 1);
+  await pool.query("DELETE FROM servicios WHERE id = ? AND local_id = ?", [id, locales[0]]);
   const [rows] = await pool.query<RowDataPacket[]>("SELECT * FROM mascota_servicios WHERE servicio_id = ? AND local_id = ?", [id, locales[0]]);
   assert.equal(rows.length, 0);
 });

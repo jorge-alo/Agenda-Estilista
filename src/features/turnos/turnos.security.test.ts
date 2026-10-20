@@ -27,7 +27,10 @@ const connection = {
   async query(sql: string, values: unknown[]) {
     const normalized = sql.replace(/\s+/g, " ").trim();
     queries.push({ sql: normalized, values: [...values] });
-    if (normalized.startsWith("SELECT duracion FROM servicios")) {
+    if (normalized.startsWith("SELECT s.duracion FROM servicios")) {
+      assert.match(normalized, /s\.id = \? AND s\.local_id = \?/);
+      assert.match(normalized, /l\.business_type = 'BEAUTY'/);
+      assert.equal(values[1], LOCAL_A);
       return [[{ duracion: 30 }], []];
     }
     if (normalized.startsWith("SELECT id FROM turnos") || normalized.startsWith("SELECT id FROM clientes")) {

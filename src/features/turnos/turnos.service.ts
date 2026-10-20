@@ -4,6 +4,7 @@ import { generarHorarios } from "../../helpers/generarHorarios";
 import { sumarMinutos } from "../../helpers/sumarMinutos"
 import { normalizeClientPhone } from "../../shared/phone/normalizeClientPhone";
 import { ClientPhoneConflictError, clientPhoneDuplicateKey } from "../../shared/phone/clientPhoneDuplicate";
+import { duracionBeautyValida } from "../servicios/servicio.validation";
 
 export class ReprogramarError extends Error {
   code: string;
@@ -34,11 +35,13 @@ export const createTurno = async (data: any) => {
 
     // 🔍 1. Duración del servicio
     const [servicioRows]: any = await connection.query(
-      `SELECT duracion FROM servicios WHERE id = ?`,
-      [servicio_id]
+      `SELECT s.duracion FROM servicios s
+       JOIN locales l ON l.id = s.local_id AND l.business_type = 'BEAUTY'
+       WHERE s.id = ? AND s.local_id = ?`,
+      [servicio_id, local_id]
     );
 
-    if (servicioRows.length === 0) {
+    if (servicioRows.length === 0 || !duracionBeautyValida(servicioRows[0].duracion)) {
       throw new Error("Servicio no encontrado");
     }
 
@@ -162,7 +165,7 @@ export const getDisponibilidad = async (
 ) => {
   // 🔍 1. Obtener local
   const [localRows]: any = await pool.query(
-    "SELECT id, nombre, descripcion, direccion, telefono, horario_apertura, horario_cierre, activo, suscripcion_estado, suscripcion_vencimiento  FROM locales WHERE slug = ?",
+    "SELECT id, nombre, descripcion, direccion, telefono, horario_apertura, horario_cierre, activo, suscripcion_estado, suscripcion_vencimiento FROM locales WHERE slug = ? AND business_type = 'BEAUTY'",
     [slug]
   );
 
@@ -207,6 +210,18 @@ export const getDisponibilidad = async (
       horario_cierre: localRows[0].horario_cierre,
     };
   }
+
+  // Validar antes de cualquier limpieza de pendientes o cálculo de intervalos.
+  const [servicioRows]: any = await pool.query(
+    `SELECT s.duracion FROM servicios s
+     JOIN locales l ON l.id = s.local_id AND l.business_type = 'BEAUTY'
+     WHERE s.id = ? AND s.local_id = ?`,
+    [servicio_id, localId]
+  );
+  if (servicioRows.length === 0 || !duracionBeautyValida(servicioRows[0].duracion)) {
+    throw new Error("Servicio no encontrado");
+  }
+  const duracion = servicioRows[0].duracion;
 
   const [diaCompleto]: any =
     await pool.query(
@@ -300,18 +315,6 @@ export const getDisponibilidad = async (
   `,
     [fecha, localId, estilistaId]
   );
-
-  // 💇 6. Duración del servicio
-  const [servicioRows]: any = await pool.query(
-    "SELECT duracion FROM servicios WHERE id = ?",
-    [servicio_id]
-  );
-
-  if (servicioRows.length === 0) {
-    throw new Error("Servicio no encontrado");
-  }
-
-  const duracion = servicioRows[0].duracion;
 
   // 🧱 6. Generar slots desde DB
   let horarios: string[] = [];
@@ -466,6 +469,17 @@ export const getDisponibilidadAdmin = async (
   estilistaId: number,
   servicio_id: number
 ) => {
+  const [servicioRows]: any = await pool.query(
+    `SELECT s.duracion FROM servicios s
+     JOIN locales l ON l.id = s.local_id AND l.business_type = 'BEAUTY'
+     WHERE s.id = ? AND s.local_id = ?`,
+    [servicio_id, localId]
+  );
+  if (servicioRows.length === 0 || !duracionBeautyValida(servicioRows[0].duracion)) {
+    throw new Error("Servicio no encontrado");
+  }
+  const duracion = servicioRows[0].duracion;
+
   // 📅 1. Día de la semana (igual que antes)
   const getDiaSemanaDB = (fecha: string) => {
     const [year, month, day] = fecha.split("-").map(Number);
@@ -504,18 +518,6 @@ export const getDisponibilidadAdmin = async (
   `,
     [fecha, localId, estilistaId]
   );
-
-  // 💇 4. Duración del servicio
-  const [servicioRows]: any = await pool.query(
-    "SELECT duracion FROM servicios WHERE id = ?",
-    [servicio_id]
-  );
-
-  if (servicioRows.length === 0) {
-    throw new Error("Servicio no encontrado");
-  }
-
-  const duracion = servicioRows[0].duracion;
 
   // 🧱 5. Generar slots
   let horarios: string[] = [];
@@ -647,10 +649,12 @@ export const reprogramarTurno = async (data: any) => {
 
     // 2. Validar servicio por local y obtener duración
     const [servicioRows]: any = await connection.query(
-      "SELECT duracion FROM servicios WHERE id = ? AND local_id = ?",
+      `SELECT s.duracion FROM servicios s
+       JOIN locales l ON l.id = s.local_id AND l.business_type = 'BEAUTY'
+       WHERE s.id = ? AND s.local_id = ?`,
       [servicio_id, local_id]
     );
-    if (servicioRows.length === 0) {
+    if (servicioRows.length === 0 || !duracionBeautyValida(servicioRows[0].duracion)) {
       throw new ReprogramarError("SERVICIO_NO_ENCONTRADO", "Servicio no encontrado");
     }
     const duracion = servicioRows[0].duracion;

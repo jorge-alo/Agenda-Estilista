@@ -3,6 +3,7 @@ import { sumarMinutos } from "../../helpers/sumarMinutos";
 import { ErrorCreacionPreference, pagosService } from "../pagos/pagos.service";
 import { normalizeClientPhone } from "../../shared/phone/normalizeClientPhone";
 import { ClientPhoneConflictError, clientPhoneDuplicateKey } from "../../shared/phone/clientPhoneDuplicate";
+import { duracionBeautyValida } from "../servicios/servicio.validation";
 
 export const createTurnoPublico = async (data: any) => {
   const {
@@ -34,7 +35,7 @@ export const createTurnoPublico = async (data: any) => {
 
     // 🔎 1. buscar local (✅ AGREGAMOS requiere_sena)
     const [localRows]: any = await connection.query(
-      `SELECT id, telefono, nombre, mp_access_token, requiere_sena FROM locales WHERE slug = ?`,
+      `SELECT id, telefono, nombre, mp_access_token, requiere_sena FROM locales WHERE slug = ? AND business_type = 'BEAUTY'`,
       [slug]
     );
 
@@ -50,11 +51,13 @@ export const createTurnoPublico = async (data: any) => {
 
     // 🔥 2. obtener duración y PRECIO del servicio
     const [servicioRows]: any = await connection.query(
-      `SELECT duracion, nombre, precio FROM servicios WHERE id = ?`,
-      [servicio_id]
+      `SELECT s.duracion, s.nombre, s.precio FROM servicios s
+       JOIN locales l ON l.id = s.local_id AND l.business_type = 'BEAUTY'
+       WHERE s.id = ? AND s.local_id = ?`,
+      [servicio_id, localIdFinal]
     );
 
-    if (servicioRows.length === 0) {
+    if (servicioRows.length === 0 || !duracionBeautyValida(servicioRows[0].duracion)) {
       throw new Error("Servicio no encontrado");
     }
 

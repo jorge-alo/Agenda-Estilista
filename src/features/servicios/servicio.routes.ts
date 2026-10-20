@@ -2,16 +2,18 @@ import { Router } from "express";
 
 import { asignarServicio, createServicio, desasignarServicio, getServicios, getServiciosByLocalId, getServiciosPorEstilista, removeServicio, toggleServicio } from "./servicio.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
+import { requireBeautyBusiness } from "../../middlewares/requireBeautyBusiness";
+import { authorizeRole } from "../../middlewares/authorizeRole";
 
 
 
 export const ServiciosRouter = Router();
 
-ServiciosRouter.post("/", authMiddleware, createServicio);
+ServiciosRouter.post("/", authMiddleware, requireBeautyBusiness, authorizeRole("admin"), createServicio);
 ServiciosRouter.get("/", getServicios);
-ServiciosRouter.get("/admin", authMiddleware, getServiciosByLocalId);
-ServiciosRouter.post("/asignar", authMiddleware, asignarServicio);
-ServiciosRouter.delete("/desasignar", authMiddleware, desasignarServicio);
+ServiciosRouter.get("/admin", authMiddleware, requireBeautyBusiness, authorizeRole("admin"), getServiciosByLocalId);
+ServiciosRouter.post("/asignar", authMiddleware, requireBeautyBusiness, authorizeRole("admin"), asignarServicio);
+ServiciosRouter.delete("/desasignar", authMiddleware, requireBeautyBusiness, authorizeRole("admin"), desasignarServicio);
 ServiciosRouter.get("/estilista/:id", getServiciosPorEstilista);
-ServiciosRouter.delete("/:id", authMiddleware, removeServicio);
-ServiciosRouter.patch("/:id/toggle", authMiddleware, toggleServicio);
+ServiciosRouter.delete("/:id", authMiddleware, requireBeautyBusiness, authorizeRole("admin"), removeServicio);
+ServiciosRouter.patch("/:id/toggle", authMiddleware, requireBeautyBusiness, authorizeRole("admin"), toggleServicio);

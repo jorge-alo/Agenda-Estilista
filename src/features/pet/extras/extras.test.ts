@@ -28,8 +28,8 @@ async function insert(sql: string, values: unknown[]): Promise<number> {
   return result.insertId;
 }
 
-async function http(method: string, url: string, body?: unknown, localId: number | null = locales[0]) {
-  const token = localId === null ? undefined : jwt.sign({ userId: 1, rol: "admin", localId }, secret, { expiresIn: "1m" });
+async function http(method: string, url: string, body?: unknown, localId: number | null = locales[0], rol = "admin") {
+  const token = localId === null ? undefined : jwt.sign({ userId: 1, rol, localId }, secret, { expiresIn: "1m" });
   return new Promise<{ status: number; body: string }>((resolve, reject) => {
     const req = request({ hostname: "127.0.0.1", port, method, path: url,
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) } }, res => {
@@ -103,8 +103,18 @@ test("PET accede al catálogo", async () => {
   assert.equal((await http("GET", catalogo)).status, 200);
 });
 
-for (const [label, tenant, status] of [["BEAUTY", 2, 403], ["sin auth", -1, 401]] as const) {
+for (const [label, tenant, rol, status] of [
+  ["BEAUTY", 2, "admin", 403], ["sin auth", -1, "admin", 401],
+  ["PET no-admin", 0, "estilista", 403], ["PET superadmin", 0, "superadmin", 403],
+] as const) {
   test(`${label}: protege las ocho rutas de extras`, async () => {
+    await asignar();
+    const snapshot = async () => {
+      const [extras] = await pool.query<RowDataPacket[]>("SELECT * FROM extras WHERE local_id = ? ORDER BY id", [locales[0]]);
+      const [relaciones] = await pool.query<RowDataPacket[]>("SELECT * FROM mascota_extras WHERE local_id = ? ORDER BY mascota_id, extra_id", [locales[0]]);
+      return { extras, relaciones };
+    };
+    const previo = await snapshot();
     const routes: Array<[string, string, unknown?]> = [
       ["GET", catalogo], ["POST", catalogo, { nombre: "Nuevo" }],
       ["PATCH", `${catalogo}/${extra}`, { activo: false }], ["DELETE", `${catalogo}/${extra}`],
@@ -112,7 +122,8 @@ for (const [label, tenant, status] of [["BEAUTY", 2, 403], ["sin auth", -1, 401]
       ["PATCH", `${path()}/${extra}`, { duracionMinutos: 30 }], ["DELETE", `${path()}/${extra}`],
     ];
     for (const [method, url, body] of routes) {
-      assert.equal((await http(method, url, body, tenant < 0 ? null : locales[tenant])).status, status);
+      assert.equal((await http(method, url, body, tenant < 0 ? null : locales[tenant], rol)).status, status);
+      assert.deepEqual(await snapshot(), previo);
     }
   });
 }

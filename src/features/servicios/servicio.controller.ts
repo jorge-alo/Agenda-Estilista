@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import * as servicioService from "./servicio.service";
+import { duracionBeautyValida } from "./servicio.validation";
 
 export interface AuthRequest extends Request {
   user?: {
@@ -15,9 +16,10 @@ export const createServicio = async (req: AuthRequest, res: Response) => {
     if (!localId) {
       return res.status(401).json({ error: "No autorizado" });
     }
-    const { nombre, duracion, precio } = req.body;
+    const { nombre, duracion, precio } = req.body ?? {};
 
-    if (!nombre || !duracion || !localId || precio == null) {
+    if (typeof nombre !== "string" || !nombre.trim() || nombre.length > 100 ||
+        !duracionBeautyValida(duracion) || precio == null) {
       return res.status(400).json({ error: "Faltan datos" });
     }
 

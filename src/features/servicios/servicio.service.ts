@@ -20,7 +20,7 @@ export const getServiciosByLocal = async (slug: string) => {
     SELECT s.* 
     FROM servicios s
     JOIN locales l ON s.local_id = l.id
-    WHERE l.slug = ?
+    WHERE l.slug = ? AND l.business_type = 'BEAUTY'
     `,
     [slug]
   );
@@ -76,11 +76,14 @@ export const asignarServicioAEstilista = async (
 };
 
 export const getServiciosByEstilista = async (estilista_id: number) => {
+  if (!Number.isSafeInteger(estilista_id) || estilista_id <= 0) return [];
   const [rows]: any = await pool.query(
     `
     SELECT s.*
     FROM servicios s
     JOIN estilista_servicios es ON s.id = es.servicio_id
+    JOIN estilistas e ON e.id = es.estilista_id AND e.local_id = s.local_id
+    JOIN locales l ON l.id = e.local_id AND l.business_type = 'BEAUTY'
     WHERE es.estilista_id = ?
     AND s.activo = true
     `,
