@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { requireBeautyBusiness } from "../../middlewares/requireBeautyBusiness";
 
 import { authMiddleware }
   from "../../middlewares/auth.middleware";
@@ -12,6 +13,7 @@ const clientesRouter = Router();
 clientesRouter.get(
   "/",
   authMiddleware,
+  requireBeautyBusiness,
   obtenerClientesController
 );
 

@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { EstilistaNoEncontradoError } from "../estilistas/estilista.validation";
 
 import {
   crearBloqueoService,
@@ -53,6 +54,7 @@ export const crearBloqueoController =
       });
 
     } catch (error) {
+      if (error instanceof EstilistaNoEncontradoError) return res.status(404).json({ error: error.message });
 
       console.error(error);
 

@@ -11,10 +11,11 @@ export const createEstilista = async (nombre: string, localId: number) => {
 
 export const getEstilistasByLocal = async (slug: string) => {
   const [local]: any = await pool.query(
-    "SELECT id FROM locales WHERE slug = ?",
+    "SELECT id FROM locales WHERE slug = ? AND activo = 1 AND business_type = 'BEAUTY'",
     [slug]
   );
 
+  if (local.length === 0) return [];
   const localId = local[0].id;
 
   const [rows]: any = await pool.query(

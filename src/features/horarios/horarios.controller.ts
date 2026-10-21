@@ -38,10 +38,11 @@ export const createHorario = async (req: AuthRequest, res: Response) => {
   }
 };
 
-export const getHorarios = async (req: Request, res: Response) => {
+export const getHorarios = async (req: AuthRequest, res: Response) => {
   try {
     const { estilista_id } = req.params;
-    const data = await horarioService.getHorariosByEstilista(Number(estilista_id));
+    const context = req.user ? { localId: req.user.localId } : { slug: req.query.slug as string };
+    const data = await horarioService.getHorariosByEstilista(Number(estilista_id), context);
     res.json(data);
   } catch {
     res.status(500).json({ error: "Error" });

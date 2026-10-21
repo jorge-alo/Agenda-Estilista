@@ -25,10 +25,14 @@ export const createHorario = async (
   return result.insertId;
 };
 
-export const getHorariosByEstilista = async (estilista_id: number) => {
+export const getHorariosByEstilista = async (estilista_id: number, context: { localId: number } | { slug: string }) => {
+  const authenticated = "localId" in context;
   const [rows]: any = await pool.query(
-    "SELECT * FROM horarios WHERE estilista_id = ?",
-    [estilista_id]
+    `SELECT h.* FROM horarios h
+     JOIN estilistas e ON e.id = h.estilista_id
+     JOIN locales l ON l.id = e.local_id AND l.business_type = 'BEAUTY'
+     WHERE h.estilista_id = ? AND ${authenticated ? "l.id = ?" : "l.slug = ? AND l.activo = 1"}`,
+    [estilista_id, authenticated ? context.localId : context.slug]
   );
 
   return rows;

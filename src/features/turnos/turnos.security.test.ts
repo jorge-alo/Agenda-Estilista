@@ -33,6 +33,10 @@ const connection = {
       assert.equal(values[1], LOCAL_A);
       return [[{ duracion: 30 }], []];
     }
+    if (normalized === "SELECT id FROM estilistas WHERE id = ? AND local_id = ? FOR SHARE") {
+      assert.deepEqual(values, [303, LOCAL_A]);
+      return [[{ id: 303 }], []];
+    }
     if (normalized.startsWith("SELECT id FROM turnos") || normalized.startsWith("SELECT id FROM clientes")) {
       return [[], []];
     }
@@ -53,7 +57,12 @@ dbStub.exports = {
       connectionRequests++;
       return connection;
     },
-    query() { throw new Error("Pool.query no permitido en estas pruebas aisladas"); },
+    async query(sql: string, values: unknown[]) {
+      assert.equal(sql, "SELECT business_type FROM locales WHERE id = ?");
+      assert.deepEqual(values, [LOCAL_A]);
+      queries.push({ sql, values: [...values] });
+      return [[{ business_type: "BEAUTY" }], []];
+    },
   },
 };
 require.cache[dbPath] = dbStub;
@@ -121,12 +130,16 @@ async function postTurno(body: Record<string, unknown>, accessToken?: string) {
 }
 
 function verificarTenantEfectivo() {
+  const vertical = queries.find(({ sql }) => sql.startsWith("SELECT business_type"));
+  const estilista = queries.find(({ sql }) => sql.startsWith("SELECT id FROM estilistas"));
   const clienteLookup = queries.find(({ sql }) => sql.startsWith("SELECT id FROM clientes"));
   const clienteInsert = queries.find(({ sql }) => sql.startsWith("INSERT INTO clientes"));
   const turnoInsert = queries.find(({ sql }) => sql.startsWith("INSERT INTO turnos"));
   assert.ok(clienteLookup);
   assert.ok(clienteInsert);
   assert.ok(turnoInsert);
+  assert.deepEqual(vertical?.values, [LOCAL_A]);
+  assert.deepEqual(estilista?.values, [303, LOCAL_A]);
   const tenants = [clienteLookup.values[1], clienteInsert.values[3], turnoInsert.values[5]];
   assert.deepEqual(tenants, [LOCAL_A, LOCAL_A, LOCAL_A]);
   assert.ok(tenants.every((tenant) => tenant !== LOCAL_B), "B nunca debe ser el tenant efectivo");

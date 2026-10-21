@@ -5,6 +5,7 @@ import { sumarMinutos } from "../../helpers/sumarMinutos"
 import { normalizeClientPhone } from "../../shared/phone/normalizeClientPhone";
 import { ClientPhoneConflictError, clientPhoneDuplicateKey } from "../../shared/phone/clientPhoneDuplicate";
 import { duracionBeautyValida } from "../servicios/servicio.validation";
+import { validarEstilistaDelLocal } from "../estilistas/estilista.validation";
 
 export class ReprogramarError extends Error {
   code: string;
@@ -45,6 +46,7 @@ export const createTurno = async (data: any) => {
       throw new Error("Servicio no encontrado");
     }
 
+    await validarEstilistaDelLocal(connection, estilista_id, local_id);
     const duracion = servicioRows[0].duracion;
     const hora_fin = sumarMinutos(hora, duracion);
 
@@ -55,11 +57,12 @@ export const createTurno = async (data: any) => {
       FROM turnos
       WHERE estilista_id = ?
       AND fecha = ?
+      AND local_id = ?
       AND estado != 'cancelado'
       AND (? < hora_fin AND ? > hora)
       FOR UPDATE
       `,
-      [estilista_id, fecha, hora, hora_fin]
+      [estilista_id, fecha, local_id, hora, hora_fin]
     );
 
     if (rows.length > 0) {
@@ -130,9 +133,9 @@ export const getTurnosByFecha = async (fecha: string, localId: number) => {
         e.nombre as estilista_nombre,
         s.nombre as servicio_nombre
      FROM turnos t
-     JOIN estilistas e ON t.estilista_id = e.id
-     JOIN servicios s ON t.servicio_id = s.id
-     WHERE t.fecha = ? AND t.local_id = ? AND t.estado = 'activo'
+     JOIN estilistas e ON t.estilista_id = e.id AND e.local_id = t.local_id
+     JOIN servicios s ON t.servicio_id = s.id AND s.local_id = t.local_id
+     WHERE t.fecha = ? AND t.local_id = ? AND t.estado = 'activo' AND t.mascota_id IS NULL
      ORDER BY t.hora ASC`,
     [fecha, localId]
   );
@@ -145,7 +148,7 @@ export const getTurnosByFechaPublico = async (
   slug: string
 ) => {
   const [localRows]: any = await pool.query(
-    "SELECT id FROM locales WHERE slug = ?",
+    "SELECT id FROM locales WHERE slug = ? AND activo = 1 AND business_type = 'BEAUTY'",
     [slug]
   );
 
@@ -270,10 +273,11 @@ export const getDisponibilidad = async (
   console.log("Dia DB:", diaSemana);
   // ⏰ 3. Horarios del estilista
   const [horariosDB]: any = await pool.query(
-    `SELECT hora_inicio, hora_fin 
-     FROM horarios 
-     WHERE estilista_id = ? AND dia_semana = ? AND activo = true`,
-    [estilistaId, diaSemana]
+    `SELECT h.hora_inicio, h.hora_fin
+     FROM horarios h
+     JOIN estilistas e ON e.id = h.estilista_id AND e.local_id = ?
+     WHERE h.estilista_id = ? AND h.dia_semana = ? AND h.activo = true`,
+    [localId, estilistaId, diaSemana]
   );
 
   if (horariosDB.length === 0) {
@@ -490,10 +494,11 @@ export const getDisponibilidadAdmin = async (
 
   // ⏰ 2. Horarios del estilista
   const [horariosDB]: any = await pool.query(
-    `SELECT hora_inicio, hora_fin 
-     FROM horarios 
-     WHERE estilista_id = ? AND dia_semana = ? AND activo = true`,
-    [estilistaId, diaSemana]
+    `SELECT h.hora_inicio, h.hora_fin
+     FROM horarios h
+     JOIN estilistas e ON e.id = h.estilista_id AND e.local_id = ?
+     WHERE h.estilista_id = ? AND h.dia_semana = ? AND h.activo = true`,
+    [localId, estilistaId, diaSemana]
   );
 
   if (horariosDB.length === 0) {

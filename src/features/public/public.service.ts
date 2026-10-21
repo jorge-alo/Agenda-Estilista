@@ -4,6 +4,7 @@ import { ErrorCreacionPreference, pagosService } from "../pagos/pagos.service";
 import { normalizeClientPhone } from "../../shared/phone/normalizeClientPhone";
 import { ClientPhoneConflictError, clientPhoneDuplicateKey } from "../../shared/phone/clientPhoneDuplicate";
 import { duracionBeautyValida } from "../servicios/servicio.validation";
+import { validarEstilistaDelLocal } from "../estilistas/estilista.validation";
 
 export const createTurnoPublico = async (data: any) => {
   const {
@@ -61,6 +62,7 @@ export const createTurnoPublico = async (data: any) => {
       throw new Error("Servicio no encontrado");
     }
 
+    await validarEstilistaDelLocal(connection, estilista_id, localIdFinal);
     servicioNombre = servicioRows[0].nombre;
     const duracion = servicioRows[0].duracion;
     precio = servicioRows[0].precio;
@@ -69,10 +71,10 @@ export const createTurnoPublico = async (data: any) => {
     // 🚫 3. validar solapamiento CON BLOQUEO
     const [rows]: any = await connection.query(
       `SELECT id FROM turnos 
-       WHERE estilista_id = ? AND fecha = ? AND estado != 'cancelado' 
+       WHERE estilista_id = ? AND fecha = ? AND local_id = ? AND estado != 'cancelado'
        AND (? < hora_fin AND ? > hora) 
        FOR UPDATE`,
-      [estilista_id, fecha, hora, hora_fin]
+      [estilista_id, fecha, localIdFinal, hora, hora_fin]
     );
 
     if (rows.length > 0) {
@@ -189,9 +191,9 @@ export const obtenerTurnoPublico = async (turnoId: number) => {
             s.nombre AS servicioNombre,
             l.nombre AS localNombre
      FROM turnos t
-     JOIN servicios s ON t.servicio_id = s.id
-     JOIN locales l ON t.local_id = l.id
-     WHERE t.id = ?`,
+     JOIN servicios s ON t.servicio_id = s.id AND s.local_id = t.local_id
+     JOIN locales l ON t.local_id = l.id AND l.business_type = 'BEAUTY'
+     WHERE t.id = ? AND t.mascota_id IS NULL`,
     [turnoId]
   );
 

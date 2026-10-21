@@ -1,4 +1,5 @@
 import { pool } from "../../config/db";
+import { validarEstilistaDelLocal } from "../estilistas/estilista.validation";
 
 interface CrearBloqueoDTO {
   local_id: number;
@@ -17,27 +18,36 @@ export const crearBloqueoService =
     data: CrearBloqueoDTO
   ) => {
 
-    await pool.query(
-      `
-      INSERT INTO bloqueos_horarios (
-        local_id,
-        estilista_id,
-        fecha,
-        hora_inicio,
-        hora_fin,
-        motivo
-      )
-      VALUES (?, ?, ?, ?, ?, ?)
-      `,
-      [
-        data.local_id,
-        data.estilista_id,
-        data.fecha,
-        data.hora_inicio,
-        data.hora_fin,
-        data.motivo || null
-      ]
-    );
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      await validarEstilistaDelLocal(connection, data.estilista_id, data.local_id);
+      await connection.query(
+        `
+        INSERT INTO bloqueos_horarios (
+          local_id,
+          estilista_id,
+          fecha,
+          hora_inicio,
+          hora_fin,
+          motivo
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        `,
+        [
+          data.local_id,
+          data.estilista_id,
+          data.fecha,
+          data.hora_inicio,
+          data.hora_fin,
+          data.motivo || null
+        ]
+      );
+      await connection.commit();
+    } catch (error: unknown) {
+      await connection.rollback();
+      throw error;
+    } finally { connection.release(); }
   };
 
 export const obtenerBloqueosService =

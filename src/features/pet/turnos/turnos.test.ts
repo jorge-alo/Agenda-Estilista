@@ -1220,7 +1220,7 @@ test("las rutas BEAUTY legacy no modifican PET y siguen operando sobre turnos BE
   for (const action of ["cancelar", "completar"] as const) {
     const petId = await turnoExistente("09:00", "10:00", "activo", 0);
     const denied = await patchLegacyEstado(action, petId, localId);
-    assert.equal(denied.status, 404, action);
+    assert.equal(denied.status, 403, action); // M.6C: explicit vertical boundary, before controller.
     const [petRows] = await pool.query<(RowDataPacket & { estado: string })[]>("SELECT estado FROM turnos WHERE id = ?", [petId]);
     assert.equal(petRows[0].estado, "activo");
     await pool.query("DELETE FROM turnos WHERE id = ? AND local_id = ?", [petId, localId]);

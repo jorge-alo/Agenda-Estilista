@@ -46,10 +46,10 @@ export const getResumenDiaService = async (
   FROM turnos t
 
   JOIN servicios s
-    ON s.id = t.servicio_id
+    ON s.id = t.servicio_id AND s.local_id = t.local_id
 
   JOIN estilistas e
-    ON e.id = t.estilista_id
+    ON e.id = t.estilista_id AND e.local_id = t.local_id
 
   WHERE t.fecha = ?
   AND t.local_id = ?
@@ -199,13 +199,14 @@ export const getHistorialClientesService =
             FROM turnos t2
 
             JOIN servicios s
-              ON s.id = t2.servicio_id
+              ON s.id = t2.servicio_id AND s.local_id = t2.local_id
 
             WHERE
               t2.cliente_telefono =
                 t.cliente_telefono
+              AND t2.local_id = t.local_id
 
-            ORDER BY t2.fecha DESC
+            ORDER BY t2.fecha DESC, t2.hora DESC, t2.id DESC
 
             LIMIT 1
           ) AS ultimo_servicio
@@ -215,6 +216,7 @@ export const getHistorialClientesService =
         WHERE t.local_id = ?
 
         GROUP BY
+          t.local_id,
           t.cliente_telefono,
           t.cliente_nombre
 
@@ -272,7 +274,7 @@ export const getReporteMensualService =
         FROM turnos t
 
         JOIN servicios s
-          ON s.id = t.servicio_id
+          ON s.id = t.servicio_id AND s.local_id = t.local_id
 
         WHERE
           t.local_id = ?
@@ -292,7 +294,7 @@ export const getReporteMensualService =
         FROM turnos t
 
         JOIN servicios s
-          ON s.id = t.servicio_id
+          ON s.id = t.servicio_id AND s.local_id = t.local_id
 
         WHERE
           t.local_id = ?
@@ -318,7 +320,7 @@ export const getReporteMensualService =
         FROM turnos t
 
         JOIN estilistas e
-          ON e.id = t.estilista_id
+          ON e.id = t.estilista_id AND e.local_id = t.local_id
 
         WHERE
           t.local_id = ?

@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { requireBeautyBusiness } from "../../middlewares/requireBeautyBusiness";
 
 import { authMiddleware }
   from "../../middlewares/auth.middleware";
@@ -10,22 +11,21 @@ import {
 } from "./bloqueos.controller";
 
 const bloqueosRouter = Router();
+// Every operation in this legacy family belongs to BEAUTY.
+bloqueosRouter.use(authMiddleware, requireBeautyBusiness);
 
 bloqueosRouter.post(
   "/",
-  authMiddleware,
   crearBloqueoController
 );
 
 bloqueosRouter.get(
   "/",
-  authMiddleware,
   obtenerBloqueosController
 );
 
 bloqueosRouter.delete(
   "/:id",
-  authMiddleware,
   eliminarBloqueoController
 );
 export default bloqueosRouter;

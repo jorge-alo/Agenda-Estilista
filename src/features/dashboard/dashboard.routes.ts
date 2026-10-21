@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { requireBeautyBusiness } from "../../middlewares/requireBeautyBusiness";
 
 import { authMiddleware }
   from "../../middlewares/auth.middleware";
@@ -10,22 +11,20 @@ import {
 } from "./dashboard.controller";
 
 const dashboardRouter = Router();
+dashboardRouter.use(authMiddleware, requireBeautyBusiness);
 
 dashboardRouter.get(
   "/resumen-dia",
-  authMiddleware,
   getResumenDiaController
 );
 
 dashboardRouter.get(
   "/clientes",
-  authMiddleware,
   getHistorialClientesController
 );
 
 dashboardRouter.get(
   "/reporte-mensual",
-  authMiddleware,
   getReporteMensualController
 );
 
