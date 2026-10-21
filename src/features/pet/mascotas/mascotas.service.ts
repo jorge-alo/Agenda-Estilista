@@ -11,6 +11,8 @@ import {
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { InvalidClientPhoneError, normalizeClientPhone } from "../../../shared/phone/normalizeClientPhone";
 import { ClientPhoneConflictError, clientPhoneDuplicateKey } from "../../../shared/phone/clientPhoneDuplicate";
+import { bloquearMascotaOnline, MascotaReservaOnlineError, validarElegibilidadOnline } from "./mascotas.online";
+export { MascotaReservaOnlineError } from "./mascotas.online";
 
 export interface Mascota {
   id: number;
@@ -247,69 +249,63 @@ export const editarMascota = async (localId: number, mascotaId: number, payload:
 
   values.push(mascotaId, localId);
 
-  const [result]: any = await pool.query(
-    `UPDATE mascotas SET ${fields.join(", ")} WHERE id = ? AND local_id = ?`,
-    values
-  );
-
-  if (result.affectedRows === 0) {
-    throw new Error("Mascota no encontrada o no pertenece a tu local");
-  }
-
-  const [rows]: any = await pool.query(
-    `SELECT id, local_id, nombre, raza,
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const mascota = await bloquearMascotaOnline(connection, localId, mascotaId);
+    if (payload.activo === true && mascota.activo === 0 && mascota.reserva_online_habilitada === 1) {
+      await validarElegibilidadOnline(connection, localId, {
+        ...mascota, activo: 1,
+        alta_exigencia: payload.altaExigencia === undefined ? mascota.alta_exigencia : Number(payload.altaExigencia),
+      });
+    }
+    await connection.query(
+      `UPDATE mascotas SET ${fields.join(", ")} WHERE id = ? AND local_id = ?`, values,
+    );
+    const [rows] = await connection.query<(RowDataPacket & Mascota)[]>(
+      `SELECT id, local_id, nombre, raza,
         DATE_FORMAT(fecha_nacimiento, '%Y-%m-%d') AS fecha_nacimiento,
         sexo, tamano, tipo_pelo, observaciones,
         alta_exigencia, reserva_online_habilitada, activo, created_at, updated_at
      FROM mascotas WHERE id = ? AND local_id = ?`,
-    [mascotaId, localId]
-  );
+      [mascotaId, localId],
+    );
 
-  return rows[0];
-};
-
-export class MascotaReservaOnlineError extends Error {
-  constructor(public readonly status: number, public readonly code: string) {
-    super(code);
+    await connection.commit();
+    return rows[0];
+  } catch (error: unknown) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
   }
-}
-
-interface MascotaReservaOnlineRow extends RowDataPacket {
-  id: number;
-  activo: number;
-  reserva_online_habilitada: number;
-}
+};
 
 export const editarReservaOnline = async (
   localId: number,
   mascotaId: number,
   payload: EditarReservaOnlinePayload,
 ): Promise<{ id: number; reservaOnlineHabilitada: boolean }> => {
-  const value = payload.reservaOnlineHabilitada ? 1 : 0;
-  const [result] = await pool.query<ResultSetHeader>(
-    `UPDATE mascotas
-     SET reserva_online_habilitada = ?
-     WHERE id = ? AND local_id = ? AND (? = 0 OR activo = 1)`,
-    [value, mascotaId, localId, value],
-  );
-
-  if (result.affectedRows === 1) {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const mascota = await bloquearMascotaOnline(connection, localId, mascotaId);
+    if (payload.reservaOnlineHabilitada) {
+      if (mascota.activo !== 1) throw new MascotaReservaOnlineError(409, "PET_MASCOTA_INACTIVE");
+      if (mascota.reserva_online_habilitada === 0) await validarElegibilidadOnline(connection, localId, mascota);
+    }
+    await connection.query<ResultSetHeader>(
+      "UPDATE mascotas SET reserva_online_habilitada = ? WHERE id = ? AND local_id = ?",
+      [Number(payload.reservaOnlineHabilitada), mascotaId, localId],
+    );
+    await connection.commit();
     return { id: mascotaId, reservaOnlineHabilitada: payload.reservaOnlineHabilitada };
+  } catch (error: unknown) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
   }
-
-  const [rows] = await pool.query<MascotaReservaOnlineRow[]>(
-    `SELECT id, activo, reserva_online_habilitada
-     FROM mascotas WHERE id = ? AND local_id = ?`,
-    [mascotaId, localId],
-  );
-  if (!rows.length) throw new MascotaReservaOnlineError(404, "PET_MASCOTA_NOT_FOUND");
-  if (payload.reservaOnlineHabilitada && rows[0].activo !== 1) {
-    throw new MascotaReservaOnlineError(409, "PET_MASCOTA_INACTIVE");
-  }
-  if (rows[0].reserva_online_habilitada !== value) {
-    throw new MascotaReservaOnlineError(409, "PET_MASCOTA_RESERVA_ONLINE_CONFLICT");
-  }
-  return { id: mascotaId, reservaOnlineHabilitada: payload.reservaOnlineHabilitada };
 };
 
 export const crearResponsable = async (localId: number, payload: CrearResponsablePayload): Promise<{ id: number; nombre: string; telefono: string; local_id: number; created_at: string; isNew: boolean }> => {

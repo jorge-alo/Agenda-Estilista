@@ -105,6 +105,9 @@ export const editarMascota = async (req: AuthRequest, res: Response) => {
     const mascota = await petService.editarMascota(localId, mascotaId, validation.data!);
     return res.json(mascota);
   } catch (error: any) {
+    if (error instanceof petService.MascotaReservaOnlineError) {
+      return res.status(error.status).json({ error: error.code });
+    }
     if (error.message === "No hay campos para actualizar") {
       return res.status(400).json({ error: error.message });
     }

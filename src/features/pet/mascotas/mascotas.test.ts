@@ -10,6 +10,8 @@ import jwt from "jsonwebtoken";
 import { pool } from "../../../config/db";
 import { normalizeClientPhone } from "../../../shared/phone/normalizeClientPhone";
 import { clientPhoneDuplicateKey } from "../../../shared/phone/clientPhoneDuplicate";
+import { assertNoMascotaFixtures, cleanupMascotaFixture } from "./mascotas.test-fixtures";
+import type { ResultSetHeader } from "mysql2/promise";
 
 const JWT_TEST_SECRET = "SECRETO_JWT_FICTICIO_PET02_SOLO_TESTS";
 const fixtureSuffix = randomUUID();
@@ -118,7 +120,7 @@ beforeEach((t) => {
   t.mock.property(process, "env", { JWT_SECRET: JWT_TEST_SECRET });
 });
 
-after(async () => {
+after(async t => {
   const errors: unknown[] = [];
   try {
     if (server) {
@@ -128,16 +130,22 @@ after(async () => {
     errors.push(error);
   } finally {
     try {
-      // CASCADE limpia mascotas y relaciones; intentar todos los fixtures.
-      for (const localId of [petLocalId, otherPetLocalId, beautyLocalId]) {
+      // Explicit fixture cleanup respects the real servicios -> locales RESTRICT FK.
+      for (const [localId, slug] of [
+        [petLocalId, `pet-test-${fixtureSuffix}`],
+        [otherPetLocalId, `other-pet-test-${fixtureSuffix}`],
+        [beautyLocalId, `beauty-test-${fixtureSuffix}`],
+      ] as const) {
         if (localId) {
           try {
-            await pool.query("DELETE FROM locales WHERE id = ?", [localId]);
+            await cleanupMascotaFixture(localId, slug);
           } catch (error) {
             errors.push(error);
           }
         }
       }
+      await assertNoMascotaFixtures([petLocalId, otherPetLocalId, beautyLocalId].filter(Boolean));
+      if ("diagnostic" in t) t.diagnostic(`Mascotas cleanup read-only PASS; familia ${fixtureSuffix}; locales ${petLocalId},${otherPetLocalId},${beautyLocalId}; residuos 0`);
     } finally {
       try {
         await pool.end();
@@ -767,13 +775,19 @@ describe("PET-11B.1 habilitación administrativa de reserva online", () => {
     assert.equal((await httpRequest("PATCH", path(2147483648), petAdminToken(), { reservaOnlineHabilitada: true })).statusCode, 400);
   });
 
-  test("false → true → false actualiza solo el flag y persiste; no requiere servicios", async () => {
+  test("false → true → false actualiza solo el flag con responsable, servicio y Settings válidos; extras opcionales", async () => {
     const create = await httpRequest("POST", "/api/pet/admin/mascotas", petAdminToken(), { nombre: "Toggle reserva", altaExigencia: true });
     const mascota = JSON.parse(create.body);
     assert.equal(mascota.reserva_online_habilitada, 0);
 
     const before = await httpRequest("PATCH", `/api/pet/admin/mascotas/${mascota.id}`, petAdminToken(), { altaExigencia: true });
     assert.equal(before.statusCode, 200);
+    const responsable = JSON.parse((await httpRequest("POST", "/api/pet/admin/responsables", petAdminToken(), { nombre: "Toggle responsable", telefono: "1123456701" })).body);
+    assert.ok(responsable.id);
+    await pool.query("INSERT INTO mascota_clientes (local_id, mascota_id, cliente_id) VALUES (?, ?, ?)", [petLocalId, mascota.id, responsable.id]);
+    const [servicio] = await pool.query<ResultSetHeader>("INSERT INTO servicios (local_id, nombre, duracion, precio, activo) VALUES (?, 'Toggle servicio', NULL, NULL, 1)", [petLocalId]);
+    await pool.query("INSERT INTO mascota_servicios (local_id, mascota_id, servicio_id, duracion_minutos) VALUES (?, ?, ?, 60)", [petLocalId, mascota.id, servicio.insertId]);
+    await pool.query("INSERT INTO pet_settings (local_id, high_demand_rule, high_demand_gap_minutes) VALUES (?, 'MIN_GAP', 30)", [petLocalId]);
 
     const enable = await httpRequest("PATCH", path(mascota.id), petAdminToken(), { reservaOnlineHabilitada: true });
     assert.equal(enable.statusCode, 200);
@@ -787,7 +801,7 @@ describe("PET-11B.1 habilitación administrativa de reserva online", () => {
 
     for (const table of ["mascota_servicios", "mascota_extras"] as const) {
       const [rows]: any = await pool.query(`SELECT COUNT(*) AS total FROM ${table} WHERE mascota_id = ? AND local_id = ?`, [mascota.id, petLocalId]);
-      assert.equal(rows[0].total, 0);
+      assert.equal(rows[0].total, table === "mascota_servicios" ? 1 : 0);
     }
 
     const disable = await httpRequest("PATCH", path(mascota.id), petAdminToken(), { reservaOnlineHabilitada: false });
