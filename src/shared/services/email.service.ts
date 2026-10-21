@@ -63,14 +63,14 @@ export const emailService = {
       });
 
       if (error) {
-        console.error("❌ ERROR RESEND:", error);
+        console.error("Password recovery email delivery failed");
         return { success: false, error: error.message };
       }
 
       console.log("✅ EMAIL ENVIADO CON ÉXITO. ID:", data?.id);
       return { success: true };
     } catch (error: any) {
-      console.error("❌ ERROR CRÍTICO:", error.message);
+      console.error("Password recovery email delivery failed");
       return { success: false, error: error.message };
     }
   },

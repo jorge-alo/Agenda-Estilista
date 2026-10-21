@@ -57,7 +57,17 @@ export const reservar = async (req: Request, res: Response) => {
     if (error instanceof EstilistaNoEncontradoError) return res.status(404).json({ error: error.message });
     if (error instanceof InvalidClientPhoneError) return res.status(400).json({ error: error.code });
     if (error instanceof ClientPhoneConflictError) return res.status(409).json({ error: error.code });
-    res.status(400).json({ error: error.message });
+    const safeDomainMessages = [
+      "Local no encontrado",
+      "Servicio no encontrado",
+      "Ese horario ya está ocupado",
+      "Este local tiene activado el cobro de seña, pero no ha configurado Mercado Pago. Contactá al administrador.",
+      "Turno reservado, pero no se pudo generar el link de pago. Por favor intentá de nuevo.",
+    ];
+    if (error instanceof Error && safeDomainMessages.includes(error.message)) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: "Error al reservar turno" });
   }
 };
 

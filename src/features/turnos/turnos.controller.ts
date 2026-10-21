@@ -224,11 +224,16 @@ export const createAdmin = async (req: AuthRequest, res: Response) => {
             local_id: localId // 🔥 saca el localId del token
         });
 
-        res.json({ message: "Turno creado", turnoId });
-    } catch (error: any) {
-        if (error instanceof EstilistaNoEncontradoError) return res.status(404).json({ error: error.message });
-        res.status(400).json({ error: error.message });
+    res.json({ message: "Turno creado", turnoId });
+  } catch (error: any) {
+    if (error instanceof EstilistaNoEncontradoError) return res.status(404).json({ error: error.message });
+    if (error instanceof InvalidClientPhoneError) return res.status(400).json({ error: error.code });
+    if (error instanceof ClientPhoneConflictError) return res.status(409).json({ error: error.code });
+    if (error instanceof Error && ["Servicio no encontrado", "Ese horario ya está ocupado"].includes(error.message)) {
+      return res.status(400).json({ error: error.message });
     }
+    res.status(500).json({ error: "Error al crear turno" });
+  }
 };
 
 export const getByRangoAdmin = async (req: AuthRequest, res: Response) => {

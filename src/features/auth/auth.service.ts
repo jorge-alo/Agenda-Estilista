@@ -79,27 +79,16 @@ export const requestPasswordReset = async (email: string) => {
     [resetToken, expires, userId]
   );
 
-  // 📧 En producción, aquí iría el envío de email (Nodemailer, Resend, etc.)
-  // Para desarrollo, lo mostramos en consola para que puedas copiar el link y probar:
   const frontendUrl = process.env.CORS_ORIGINS;
   const resetLink = `${frontendUrl}/reset-password?token=${resetToken}`;
-  console.log(`\n🔗 [DEV] Link de recuperación para ${email}:`);
-  console.log(`${frontendUrl}/reset-password?token=${resetToken}\n`);
 
-   // 📧 Enviar email con Nodemailer + Gmail
-  const emailResult = await emailService.enviarEmailRecuperacion({
+  await emailService.enviarEmailRecuperacion({
     to: email,
     resetLink,
     nombreUsuario,
   });
 
-    // Fallback: si falla el envío, mostrar link en consola (solo en desarrollo)
-  if (!emailResult.success) {
-    console.log(`\n🔗 [DEV] Link de recuperación para ${email}:`);
-    console.log(`${resetLink}\n`);
-  }
-
-
+  // El enlace de recuperación solo se entrega por el canal de email; nunca se registra.
   return { success: true };
 };
 
