@@ -20,7 +20,7 @@ import publicLocalRouter from "../../publicLocal/publicLocal.routes";
 export { pool };
 export const FECHA = "2099-10-20";
 export const SIGUIENTE = "2099-10-21";
-const prefix = `pet12e-${randomUUID()}`;
+let prefix = `pet12e-${randomUUID()}`;
 const locals: number[] = [];
 const jwtSecret = "PET12E_TEST_ONLY";
 let server: Server;
@@ -218,7 +218,8 @@ export async function waitForExpiry(f: Fixture): Promise<void> {
   })());
 }
 
-export function useBookingHarness(): void {
+export function useBookingHarness(label = "pet12e"): void {
+  prefix = `${label}-${randomUUID()}`;
   before(async () => {
     const app = express();
     app.set("trust proxy", 1);
