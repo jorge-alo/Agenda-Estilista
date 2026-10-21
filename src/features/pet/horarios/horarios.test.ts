@@ -17,8 +17,8 @@ const valido = { diaSemana: 1, horaInicio: "09:00", horaFin: "13:00" };
 let server: Server;
 let port: number;
 
-async function http(method: string, path = base, body?: unknown, localId: number | null = locales[0]) {
-  const token = localId === null ? undefined : jwt.sign({ userId: 1, rol: "admin", localId }, secret, { expiresIn: "1m" });
+async function http(method: string, path = base, body?: unknown, localId: number | null = locales[0], rol = "admin") {
+  const token = localId === null ? undefined : jwt.sign({ userId: 1, rol, localId }, secret, { expiresIn: "1m" });
   return new Promise<{ status: number; body: string }>((resolve, reject) => {
     const req = request({ hostname: "127.0.0.1", port, method, path,
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) } }, res => {
@@ -84,6 +84,25 @@ for (const [label, tenant, status] of [["sin auth", -1, 401], ["BEAUTY", 2, 403]
     for (const [method, path, body] of [["GET", base, undefined], ["POST", base, valido], ["PATCH", `${base}/1`, { activo: false }], ["DELETE", `${base}/1`, undefined]] as const) {
       assert.equal((await http(method, path, body, tenant < 0 ? null : locales[tenant])).status, status);
     }
+  });
+}
+
+for (const rol of ["estilista", "superadmin"]) {
+  test(`M.4B PET ${rol}: cuatro rutas horarios devuelven 403 sin modificar filas`, async () => {
+    const horario = await crear();
+    for (const [method, path, body] of [
+      ["GET", base, undefined],
+      ["POST", base, { ...valido, horaInicio: "15:00", horaFin: "19:00" }],
+      ["PATCH", `${base}/${horario.id}`, { activo: false }],
+      ["DELETE", `${base}/${horario.id}`, undefined],
+    ] as const) {
+      const result = await http(method, path, body, locales[0], rol);
+      assert.equal(result.status, 403, `${method} ${path}`);
+      assert.deepEqual(JSON.parse(result.body), { error: "Acceso denegado" });
+    }
+    const result = await http("GET");
+    assert.equal(result.status, 200);
+    assert.deepEqual(JSON.parse(result.body), [horario]);
   });
 }
 

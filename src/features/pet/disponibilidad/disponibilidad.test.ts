@@ -399,9 +399,9 @@ describe("PET-07C GET disponibilidad admin", () => {
     return `/api/pet/admin/disponibilidad?${query.toString()}`;
   }
 
-  async function http(path: string, localId: number | null = localPet): Promise<{ status: number; body: string }> {
+  async function http(path: string, localId: number | null = localPet, rol = "admin"): Promise<{ status: number; body: string }> {
     const token = localId === null ? undefined : jwt.sign(
-      { userId: 1, rol: "admin", localId }, secret, { expiresIn: "1m" },
+      { userId: 1, rol, localId }, secret, { expiresIn: "1m" },
     );
     return new Promise((resolve, reject) => {
       const req = request({
@@ -558,6 +558,16 @@ describe("PET-07C GET disponibilidad admin", () => {
     assert.equal((await http(path, null)).status, 401);
     assert.equal((await http(path, localBeauty)).status, 403);
   });
+
+  for (const rol of ["estilista", "superadmin"]) {
+    it(`M.4B PET ${rol}: disponibilidad admin devuelve 403 con consulta válida`, async () => {
+      const path = queryPath({ mascotaId, servicioId, fecha: fechaFutura });
+      assert.equal((await http(path)).status, 200);
+      const result = await http(path, localPet, rol);
+      assert.equal(result.status, 403);
+      assert.deepEqual(json(result), { error: "Acceso denegado" });
+    });
+  }
 
   it("valida IDs, fecha, repetición, duplicados, campos extra y valores vacíos", async () => {
     const invalidPaths = [

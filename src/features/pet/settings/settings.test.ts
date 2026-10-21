@@ -18,8 +18,8 @@ const maxPerDay = { highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, h
 let server: Server;
 let port: number;
 
-async function http(method: string, body?: unknown, localId: number | null = locales[0], path = base) {
-  const token = localId === null ? undefined : jwt.sign({ userId: 1, rol: "admin", localId }, secret, { expiresIn: "1m" });
+async function http(method: string, body?: unknown, localId: number | null = locales[0], path = base, rol = "admin") {
+  const token = localId === null ? undefined : jwt.sign({ userId: 1, rol, localId }, secret, { expiresIn: "1m" });
   return new Promise<{ status: number; body: string }>((resolve, reject) => {
     const req = request({ hostname: "127.0.0.1", port, method, path,
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) } }, res => {
@@ -80,6 +80,21 @@ for (const [label, tenant, status] of [["sin auth", null, 401], ["BEAUTY", 2, 40
     const target = tenant === null ? null : locales[tenant];
     assert.equal((await http("GET", undefined, target)).status, status);
     assert.equal((await http("PUT", minGap, target)).status, status);
+  });
+}
+
+for (const rol of ["estilista", "superadmin"]) {
+  test(`M.4B PET ${rol}: GET/PUT settings devuelven 403 sin reemplazar configuración`, async () => {
+    const inicial = await http("PUT", minGap);
+    assert.equal(inicial.status, 200);
+    for (const [method, body] of [["GET", undefined], ["PUT", maxPerDay]] as const) {
+      const result = await http(method, body, locales[0], base, rol);
+      assert.equal(result.status, 403, `${method} ${base}`);
+      assert.deepEqual(JSON.parse(result.body), { error: "Acceso denegado" });
+    }
+    const result = await http("GET");
+    assert.equal(result.status, 200);
+    assert.deepEqual(json(result), json(inicial));
   });
 }
 

@@ -1,9 +1,10 @@
 import { Router } from "express";
 import * as settings from "./settings.controller";
+import { authorizeRole } from "../../../middlewares/authorizeRole";
 
 const settingsRouter = Router();
 
-settingsRouter.get("/settings", settings.obtener);
-settingsRouter.put("/settings", settings.guardar);
+settingsRouter.get("/settings", authorizeRole("admin"), settings.obtener);
+settingsRouter.put("/settings", authorizeRole("admin"), settings.guardar);
 
 export default settingsRouter;

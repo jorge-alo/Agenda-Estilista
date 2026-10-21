@@ -19,8 +19,8 @@ const completo = { fecha: "2026-10-20", esDiaCompleto: true };
 let server: Server;
 let port: number;
 
-async function http(method: string, path = base, body?: unknown, localId: number | null = locales[0]) {
-  const token = localId === null ? undefined : jwt.sign({ userId: 1, rol: "admin", localId }, secret, { expiresIn: "1m" });
+async function http(method: string, path = base, body?: unknown, localId: number | null = locales[0], rol = "admin") {
+  const token = localId === null ? undefined : jwt.sign({ userId: 1, rol, localId }, secret, { expiresIn: "1m" });
   return new Promise<{ status: number; body: string }>((resolve, reject) => {
     const req = request({ hostname: "127.0.0.1", port, method, path,
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) } }, res => {
@@ -83,6 +83,25 @@ for (const [label, tenant, status] of [["sin auth", -1, 401], ["BEAUTY", 2, 403]
     for (const [method, path, body] of [["GET", base, undefined], ["POST", base, parcial], ["PATCH", `${base}/1`, { motivo: "X" }], ["DELETE", `${base}/1`, undefined]] as const) {
       assert.equal((await http(method, path, body, tenant < 0 ? null : locales[tenant])).status, status);
     }
+  });
+}
+
+for (const rol of ["estilista", "superadmin"]) {
+  test(`M.4B PET ${rol}: cuatro rutas bloqueos devuelven 403 sin modificar filas`, async () => {
+    const bloqueo = await crear();
+    for (const [method, path, body] of [
+      ["GET", base, undefined],
+      ["POST", base, { ...completo, fecha: "2026-10-21" }],
+      ["PATCH", `${base}/${bloqueo.id}`, { motivo: "Cambio no autorizado" }],
+      ["DELETE", `${base}/${bloqueo.id}`, undefined],
+    ] as const) {
+      const result = await http(method, path, body, locales[0], rol);
+      assert.equal(result.status, 403, `${method} ${path}`);
+      assert.deepEqual(JSON.parse(result.body), { error: "Acceso denegado" });
+    }
+    const result = await http("GET");
+    assert.equal(result.status, 200);
+    assert.deepEqual(JSON.parse(result.body), [bloqueo]);
   });
 }
 
