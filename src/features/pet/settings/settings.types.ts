@@ -57,11 +57,8 @@ export function validarPayload(body: unknown): PetSettingsPayload {
   if (gap !== null) {
     throw new PetSettingsError(400, "highDemandGapMinutes debe ser null para MAX_PER_DAY");
   }
-  if (max !== null && !enteroPositivo(max)) {
-    throw new PetSettingsError(400, "highDemandMaxPerDay debe ser un entero positivo compatible con INT");
-  }
-  if (!enteroPositivo(max)) {
-    throw new PetSettingsError(400, "highDemandMaxPerDay es obligatorio para MAX_PER_DAY");
+  if (max !== 1) {
+    throw new PetSettingsError(400, "highDemandMaxPerDay debe ser exactamente 1 para MAX_PER_DAY");
   }
   return { highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: max };
 }

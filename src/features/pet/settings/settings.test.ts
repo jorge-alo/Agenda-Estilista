@@ -14,7 +14,7 @@ const secret = "PET06_HIGH_DEMAND_FICTICIO_SOLO_TEST";
 const locales: number[] = [];
 const base = "/api/pet/admin/settings";
 const minGap = { highDemandRule: "MIN_GAP", highDemandGapMinutes: 300, highDemandMaxPerDay: null };
-const maxPerDay = { highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 2 };
+const maxPerDay = { highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 1 };
 let server: Server;
 let port: number;
 
@@ -114,14 +114,14 @@ test("PUT crea MIN_GAP y GET lo refleja", async () => {
 test("PUT crea MAX_PER_DAY y GET lo refleja", async () => {
   const put = await http("PUT", maxPerDay);
   assert.equal(put.status, 200);
-  assert.deepEqual(json(put), { configured: true, highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 2 });
+  assert.deepEqual(json(put), { configured: true, highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 1 });
   assert.deepEqual(json(await http("GET")), json(put));
 });
 
 test("PUT reemplaza MIN_GAP por MAX_PER_DAY sobre la misma fila", async () => {
   await http("PUT", minGap);
   const put = await http("PUT", maxPerDay);
-  assert.deepEqual(json(put), { configured: true, highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 2 });
+  assert.deepEqual(json(put), { configured: true, highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 1 });
   const [rows] = await pool.query<RowDataPacket[]>(
     "SELECT high_demand_rule, high_demand_gap_minutes, high_demand_max_per_day FROM pet_settings WHERE local_id = ?", [locales[0]]
   );
@@ -154,7 +154,7 @@ test("dos tenants mantienen configuraciones independientes", async () => {
   await http("PUT", minGap, locales[0]);
   await http("PUT", maxPerDay, locales[1]);
   assert.deepEqual(json(await http("GET", undefined, locales[0])), { configured: true, highDemandRule: "MIN_GAP", highDemandGapMinutes: 300, highDemandMaxPerDay: null });
-  assert.deepEqual(json(await http("GET", undefined, locales[1])), { configured: true, highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 2 });
+  assert.deepEqual(json(await http("GET", undefined, locales[1])), { configured: true, highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 1 });
   const [rows] = await pool.query<RowDataPacket[]>("SELECT local_id FROM pet_settings WHERE local_id IN (?, ?) ORDER BY local_id", [locales[0], locales[1]]);
   assert.equal(rows.length, 2);
 });
@@ -179,6 +179,7 @@ const invalidos: Array<[string, unknown]> = [
   ["gap array", { highDemandRule: "MIN_GAP", highDemandGapMinutes: [1], highDemandMaxPerDay: null }],
   ["gap fuera de rango INT", { highDemandRule: "MIN_GAP", highDemandGapMinutes: 2147483648, highDemandMaxPerDay: null }],
   ["max 0", { highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 0 }],
+  ["max 2", { highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 2 }],
   ["max negativo", { highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: -2 }],
   ["max decimal", { highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 2.5 }],
   ["max string", { highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: "2" }],

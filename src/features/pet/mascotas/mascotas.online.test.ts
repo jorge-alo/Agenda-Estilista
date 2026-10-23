@@ -72,7 +72,7 @@ async function fixture(t: TestContext, options: {
   }
   if (options.settings) await guardar(localId, options.settings === "MIN_GAP"
     ? { highDemandRule: "MIN_GAP", highDemandGapMinutes: 30, highDemandMaxPerDay: null }
-    : { highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 2 });
+    : { highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 1 });
   const token = jwt.sign({ userId: 1, localId, rol: "admin" }, secret, { expiresIn: "5m" });
   return {
     localId, mascotaId, clienteId, servicioId,
@@ -160,6 +160,7 @@ for (const row of [
   { high_demand_rule: "MIN_GAP", high_demand_gap_minutes: 0, high_demand_max_per_day: null },
   { high_demand_rule: "MIN_GAP", high_demand_gap_minutes: 30, high_demand_max_per_day: 1 },
   { high_demand_rule: "MAX_PER_DAY", high_demand_gap_minutes: null, high_demand_max_per_day: null },
+  { high_demand_rule: "MAX_PER_DAY", high_demand_gap_minutes: null, high_demand_max_per_day: 2 },
   { high_demand_rule: "MAX_PER_DAY", high_demand_gap_minutes: 1, high_demand_max_per_day: 2 },
   { high_demand_rule: "UNKNOWN", high_demand_gap_minutes: null, high_demand_max_per_day: 2 },
 ]) {
