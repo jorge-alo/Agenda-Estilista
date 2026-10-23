@@ -510,6 +510,22 @@ async function leerCamposTurno(id: number): Promise<Record<string, unknown>> {
   return { ...rows[0] };
 }
 
+async function leerTurnoYExtrasSnapshot(id: number) {
+  const turno = await leerCamposTurno(id);
+  const [extras] = await pool.query<(RowDataPacket & {
+    extra_id: number | null; nombre_snapshot: string; duracion_minutos: number;
+  })[]>(
+    "SELECT extra_id, nombre_snapshot, duracion_minutos FROM turno_extras WHERE turno_id = ? ORDER BY id", [id]);
+  return {
+    turno,
+    extras: extras.map(extra => ({
+      extra_id: extra.extra_id,
+      nombre_snapshot: extra.nombre_snapshot,
+      duracion_minutos: extra.duracion_minutos,
+    })),
+  };
+}
+
 async function crearTurnoBeautyFixture(targetLocal: number, stylistId: number, hora: string): Promise<number> {
   const [result] = await pool.query<ResultSetHeader>(
     `INSERT INTO turnos (local_id, fecha, hora, hora_fin, estilista_id, mascota_id, cliente_nombre,
@@ -873,6 +889,47 @@ test("conserva cliente/servicio/extras snapshot e ignora catálogo actual y FK d
   assert.deepEqual(normalizeExtras(extrasAfter), normalizeExtras(extrasBefore).map(row => ({
     ...row, extra_id: row.extra_id === extraId ? null : row.extra_id,
   })));
+});
+
+test("snapshot de duración de servicio corrupto: GET y PATCH fallan sin modificar turno ni extras", async t => {
+  const created = await post(body({ extraIds: [extraId, extraDosId] }));
+  assert.equal(created.status, 201);
+  const id = Number(created.data.id);
+  const before = await leerTurnoYExtrasSnapshot(id);
+
+  // Simulate a corrupt read without violating chk_turnos_pet_servicio_snapshot in MySQL.
+  const originalPoolQuery = pool.query.bind(pool);
+  t.mock.method(pool, "query", ((...args: Parameters<typeof pool.query>) => {
+    const sql: unknown = args[0];
+    const result = originalPoolQuery(...args);
+    if (typeof sql !== "string" || !sql.includes("SELECT mascota_id, estado, duracion_servicio_snapshot")) return result;
+    return (result as Promise<[RowDataPacket[], unknown]>).then(([rows, fields]) => [
+      [{ ...rows[0], duracion_servicio_snapshot: null }], fields,
+    ]);
+  }) as typeof pool.query);
+
+  const availability = await getDisponibilidadReprogramar(id);
+  assert.equal(availability.status, 500);
+  assert.equal(availability.data.code, "PET_TURNO_SNAPSHOT_INVALID");
+
+  const originalGetConnection = pool.getConnection.bind(pool);
+  t.mock.method(pool, "getConnection", async () => {
+    const connection = await originalGetConnection();
+    const originalQuery = connection.query.bind(connection);
+    t.mock.method(connection, "query", ((...args: Parameters<typeof connection.query>) => {
+      const sql: unknown = args[0];
+      const result = originalQuery(...args);
+      if (typeof sql !== "string" || !sql.includes("SELECT id, fecha, hora, hora_fin, estado, mascota_id, cliente_id, servicio_id")) return result;
+      return (result as Promise<[RowDataPacket[], unknown]>).then(([rows, fields]) => [
+        [{ ...rows[0], duracion_servicio_snapshot: null }], fields,
+      ]);
+    }) as typeof connection.query);
+    return connection;
+  });
+  const reprogram = await patchTurno(id, { fecha, hora: "10:00" });
+  assert.equal(reprogram.status, 500);
+  assert.equal(reprogram.data.code, "PET_TURNO_SNAPSHOT_INVALID");
+  assert.deepEqual(await leerTurnoYExtrasSnapshot(id), before);
 });
 
 test("valida destino contra ocupación, bloqueos, horario y grilla", async () => {
@@ -1579,6 +1636,25 @@ test("PET-09E.1 excluye el turno consultado pero conserva conflictos de otros tu
   result = await getDisponibilidadReprogramar(target);
   data = result.data as { duracionMinutos: number; slots: Array<{ horaInicio: string; horaFin: string }> };
   assert.ok(!data.slots.some(slot => slot.horaInicio === "10:00"), "otro turno PET sigue bloqueando el intervalo solapado");
+});
+
+test("PET-09E.1 un slot de disponibilidad obsoleto se rechaza y conserva el turno original", async () => {
+  const originalId = await turnoExistente("09:00", "10:00", "activo", 0);
+  const availability = await getDisponibilidadReprogramar(originalId);
+  assert.equal(availability.status, 200);
+  const slots = availability.data.slots as Array<{ horaInicio: string; horaFin: string }>;
+  const staleSlot = slots.find(slot => slot.horaInicio === "10:00");
+  assert.ok(staleSlot, "la disponibilidad debería ofrecer el slot adyacente de las 10:00");
+  const before = await leerTurnoYExtrasSnapshot(originalId);
+
+  const otherPet = await segundaMascota();
+  const competingBooking = await post(body({ mascotaId: otherPet, hora: staleSlot.horaInicio }));
+  assert.equal(competingBooking.status, 201);
+
+  const reprogram = await patchTurno(originalId, { fecha, hora: staleSlot.horaInicio });
+  assert.equal(reprogram.status, 409);
+  assert.equal(reprogram.data.code, "PET_SLOT_UNAVAILABLE");
+  assert.deepEqual(await leerTurnoYExtrasSnapshot(originalId), before);
 });
 
 test("PET-09E.1 calcula con snapshots aunque servicio/extra estén desligados y el catálogo cambie", async () => {
