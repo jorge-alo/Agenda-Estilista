@@ -7,6 +7,8 @@ import extrasRouter from "./extras/extras.routes";
 import horariosRouter from "./horarios/horarios.routes";
 import bloqueosRouter from "./bloqueos/bloqueos.routes";
 import settingsRouter from "./settings/settings.routes";
+import paymentSettingsRouter from "./payments/settings.routes";
+import { validarLocalContext } from "./payments/settings.controller";
 import disponibilidadRouter from "./disponibilidad/disponibilidad.routes";
 import turnosRouter from "./turnos/turnos.routes";
 import { solicitudesAdminRouter } from "./solicitudes/solicitudes.routes";
@@ -14,6 +16,7 @@ import { solicitudesAdminRouter } from "./solicitudes/solicitudes.routes";
 const petRouter = Router();
 
 petRouter.use(authMiddleware);
+petRouter.use("/payments/settings", validarLocalContext);
 petRouter.use(requirePetBusiness);
 
 petRouter.use(serviciosRouter);
@@ -22,6 +25,7 @@ petRouter.use(extrasRouter);
 petRouter.use(horariosRouter);
 petRouter.use(bloqueosRouter);
 petRouter.use(settingsRouter);
+petRouter.use(paymentSettingsRouter);
 petRouter.use(disponibilidadRouter);
 petRouter.use(turnosRouter);
 petRouter.use(solicitudesAdminRouter);

@@ -1,23 +1,38 @@
 import { pool } from "../../config/db";
-import { MercadoPagoConfig, Payment } from "mercadopago";
+
+const MP_USER_URL = "https://api.mercadolibre.com/users/me";
+const MP_VALIDATION_TIMEOUT_MS = 8000;
+
+export class MercadoPagoValidationUnavailableError extends Error {
+  constructor() { super("No se pudo verificar la credencial con Mercado Pago"); }
+}
 
 export const validarTokenMP = async (token: string): Promise<boolean> => {
   try {
-    const client = new MercadoPagoConfig({ accessToken: token });
-    const paymentClient = new Payment(client);
-
-    // Intentamos obtener un pago inexistente.
-    // Si el token es inválido → MP devuelve 401
-    // Si el token es válido → MP devuelve 404 (pago no encontrado), lo cual está bien
-    await paymentClient.get({ id: "0" });
-    return true;
-  } catch (error: any) {
-    // 401 = token inválido
-    if (error.status === 401 || error.statusCode === 401) {
-      return false;
+    const response = await fetch(MP_USER_URL, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(MP_VALIDATION_TIMEOUT_MS),
+      redirect: "error",
+    });
+    // Solo el status HTTP de esta respuesta autenticada establece la clasificación.
+    if (response.status === 401 || response.status === 403) return false;
+    if (response.status !== 200 || !/^application\/json(?:\s*;|\s*$)/i.test(response.headers.get("content-type") ?? "")) {
+      throw new MercadoPagoValidationUnavailableError();
     }
-    // Cualquier otro error (404, 500, etc.) = el token SÍ es válido
+    const body: unknown = await response.json();
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new MercadoPagoValidationUnavailableError();
+    }
+    const id: unknown = (body as { id?: unknown }).id;
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) {
+      throw new MercadoPagoValidationUnavailableError();
+    }
     return true;
+  } catch {
+    // Ni errores locales con status/statusCode ni el body remoto autentican una credencial.
+    // No transportar el error original: podría contener headers o el token.
+    throw new MercadoPagoValidationUnavailableError();
   }
 };
 
@@ -34,13 +49,13 @@ export const obtenerEstadoMP = async (localId: number) => {
     [localId]
   );
 
-  const configurado = !!rows[0]?.mp_access_token;
+  const token: unknown = rows[0]?.mp_access_token;
+  const configurado = typeof token === "string" && token.trim().length > 0;
 
   return {
     configurado,
-    // NO devolvemos el token completo por seguridad, solo los últimos 4 caracteres
-    token_preview: configurado
-      ? `****${rows[0].mp_access_token.slice(-4)}`
-      : null,
+    // Un valor corto o malformado no debe poder revelarse íntegramente.
+    token_preview: configurado && token.startsWith("APP_USR-") && token.length >= 16
+      ? `****${token.slice(-4)}` : null,
   };
 };

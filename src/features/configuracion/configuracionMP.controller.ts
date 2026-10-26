@@ -8,7 +8,7 @@ export const configurarMP = async (req: AuthRequest, res: Response) => {
     const { mp_access_token } = req.body;
 
     // Validar formato del token
-    if (!mp_access_token || !mp_access_token.startsWith("APP_USR-")) {
+    if (typeof mp_access_token !== "string" || !mp_access_token.startsWith("APP_USR-")) {
       return res.status(400).json({
         error:
           "El Access Token debe comenzar con 'APP_USR-'. Asegurate de copiar el token de PRODUCCIÓN de Mercado Pago.",
@@ -28,9 +28,13 @@ export const configurarMP = async (req: AuthRequest, res: Response) => {
     await configuracionMPService.guardarTokenMP(localId, mp_access_token);
 
     res.json({ message: "Token de Mercado Pago configurado correctamente" });
-  } catch (error: any) {
-    console.error("Error configurando MP:", error);
-    res.status(500).json({ error: "Error interno" });
+  } catch (error: unknown) {
+    if (error instanceof configuracionMPService.MercadoPagoValidationUnavailableError) {
+      console.error("Validación MP no disponible");
+      return res.status(503).json({ error: "No se pudo verificar el token con Mercado Pago" });
+    }
+    console.error("Error configurando MP");
+    return res.status(500).json({ error: "Error interno" });
   }
 };
 
@@ -39,8 +43,8 @@ export const obtenerEstadoMP = async (req: AuthRequest, res: Response) => {
     const localId = req.user.localId;
     const estado = await configuracionMPService.obtenerEstadoMP(localId);
     res.json(estado);
-  } catch (error: any) {
-    console.error("Error obteniendo estado MP:", error);
+  } catch (error: unknown) {
+    console.error("Error obteniendo estado MP");
     res.status(500).json({ error: "Error interno" });
   }
 };
