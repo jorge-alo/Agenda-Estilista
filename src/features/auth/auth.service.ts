@@ -58,7 +58,20 @@ export const loginUser = async (email: string, password: string) => {
   return { user, nombreLocal, telefono };
 };
 
+function frontendBaseForReset(): string {
+  try {
+    const url = new URL(process.env.FRONTEND_URL ?? "");
+    const allowHttp = process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test";
+    if ((url.protocol !== "https:" && !(allowHttp && url.protocol === "http:")) ||
+        url.username || url.password || url.search || url.hash) throw new Error();
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    throw new Error("FRONTEND_URL inválida para recuperación de contraseña");
+  }
+}
+
 export const requestPasswordReset = async (email: string) => {
+  const frontendUrl = frontendBaseForReset();
   // Buscamos el usuario. Usamos 'blind response' (respuesta ciega) por seguridad.
   const [rows]: any = await pool.query("SELECT id FROM usuarios WHERE email = ?", [email]);
   
@@ -79,7 +92,6 @@ export const requestPasswordReset = async (email: string) => {
     [resetToken, expires, userId]
   );
 
-  const frontendUrl = process.env.CORS_ORIGINS;
   const resetLink = `${frontendUrl}/reset-password?token=${resetToken}`;
 
   await emailService.enviarEmailRecuperacion({
