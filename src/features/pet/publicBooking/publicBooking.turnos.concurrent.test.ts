@@ -3,15 +3,15 @@ import { test, type TestContext } from "node:test";
 import type { PoolConnection, ResultSetHeader } from "mysql2/promise";
 import {
   FECHA, SIGUIENTE, admin, body, counts, deferred, fixture, highDemand, horario, instrument, logout,
-  pool, post, q, record, rejected, session, sessionState, useBookingHarness, waitForExpiry, waitForLock, watchdog,
+  pool, post, q, record, rejected, reschedule, session, sessionState, useBookingHarness, waitForExpiry, waitForLock, watchdog,
   type ApiResult, type Fixture,
 } from "./publicBooking.turnos.test-support";
 
 useBookingHarness();
 const isLocalLock = (sql: string) => /^SELECT id, business_type(?:,.*)? FROM locales WHERE id = \? FOR UPDATE$/.test(sql);
 
-async function anotherOwner(f: Fixture): Promise<Fixture> {
-  const client = await q<ResultSetHeader>("INSERT INTO clientes (local_id, nombre, telefono) VALUES (?, 'PET12E Bea', '1123452001')", [f.localId]);
+async function anotherOwner(f: Fixture, suffix = 1): Promise<Fixture> {
+  const client = await q<ResultSetHeader>("INSERT INTO clientes (local_id, nombre, telefono) VALUES (?, 'PET12E Bea', ?)", [f.localId, `112345200${suffix}`]);
   const pet = await q<ResultSetHeader>("INSERT INTO mascotas (local_id, nombre, activo, reserva_online_habilitada) VALUES (?, 'PET12E Luna', 1, 1)", [f.localId]);
   await q("INSERT INTO mascota_clientes (local_id, mascota_id, cliente_id) VALUES (?, ?, ?)", [f.localId, pet.insertId, client.insertId]);
   await q("INSERT INTO mascota_servicios (local_id, mascota_id, servicio_id, duracion_minutos) VALUES (?, ?, ?, 60)", [f.localId, pet.insertId, f.servicioId]);
@@ -24,7 +24,7 @@ async function race(
   f: Fixture,
   first: () => Promise<ApiResult>,
   second: () => Promise<ApiResult>,
-  options: { independent?: boolean; failFirstExtra?: boolean } = {},
+  options: { independent?: boolean; failFirstExtra?: boolean; initialTurns?: number } = {},
 ): Promise<[ApiResult, ApiResult]> {
   const firstLocked = deferred<number>();
   const secondAttempt = deferred<number>();
@@ -60,7 +60,7 @@ async function race(
       await waitForLock(blocker, requester, "locales");
       assert.equal(secondAcquired, false);
     }
-    assert.deepEqual(await counts(f), { turnos: 0, extras: 0 }, "A mantiene su transacción sin filas visibles");
+    assert.deepEqual(await counts(f), { turnos: options.initialTurns ?? 0, extras: 0 }, "A mantiene su transacción sin filas visibles");
   } finally {
     release.resolve();
     await Promise.allSettled([a, ...(b ? [b] : [])]);
@@ -68,6 +68,46 @@ async function race(
   assert.ok(b);
   return Promise.all([a, b]);
 }
+
+for (const opponent of ["public", "admin"] as const) {
+  test(`capacidad 2 última plaza público vs ${opponent}: espera lock, solo uno confirma`, { timeout: 30000 }, async t => {
+    const f = await fixture();
+    const second = await anotherOwner(f, 1);
+    const third = await anotherOwner(f, 2);
+    await q("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [f.localId]);
+    await q(`INSERT INTO turnos (local_id, fecha, hora, hora_fin, mascota_id, cliente_id, cliente_nombre,
+      cliente_telefono, servicio_id, servicio_nombre_snapshot, duracion_servicio_snapshot, alta_exigencia_snapshot, estado)
+      VALUES (?, ?, '10:00', '11:00', ?, ?, 'fixture', 'fixture', ?, 'fixture', 60, 0, 'activo')`,
+    [f.localId, FECHA, f.mascotaId, f.clienteId, f.servicioId]);
+    const [first, later] = await race(t, f, () => post(second),
+      opponent === "public" ? () => post(third) : () => admin(third), { initialTurns: 1 });
+    assert.equal(first.status, 201);
+    assert.equal(later.status, 409);
+    if (opponent === "public") rejected(later, 409, "PET_SLOT_UNAVAILABLE");
+    else assert.equal(record(later).code, "PET_SLOT_UNAVAILABLE");
+    assert.deepEqual(await counts(f), { turnos: 2, extras: 0 });
+  });
+}
+
+test("capacidad 2 última plaza público vs reprogramación: espera lock y conserva el destino original", { timeout: 30000 }, async t => {
+  const f = await fixture();
+  const second = await anotherOwner(f, 1);
+  const third = await anotherOwner(f, 2);
+  await q("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [f.localId]);
+  const occupied = await admin(f);
+  assert.equal(occupied.status, 201);
+  const initial = await admin(third, body(third, { hora: "12:00" }));
+  assert.equal(initial.status, 201);
+  const id = Number(record(initial).id);
+  const [first, later] = await race(t, f, () => post(second), () => reschedule(third, id, "10:00"), { initialTurns: 2 });
+  assert.equal(first.status, 201);
+  assert.equal(later.status, 409);
+  assert.equal(record(later).code, "PET_SLOT_UNAVAILABLE");
+  assert.deepEqual(await counts(f), { turnos: 3, extras: 0 });
+  const [row] = await q<(import("mysql2/promise").RowDataPacket & { hora: string })[]>(
+    "SELECT hora FROM turnos WHERE id = ? AND local_id = ?", [id, f.localId]);
+  assert.equal(row.hora, "12:00:00");
+});
 
 test("PET-12E público vs público: dos responsables/sesiones compiten por el mismo slot", { timeout: 30000 }, async t => {
   const f = await fixture();

@@ -107,11 +107,34 @@ export function post(f: Fixture, payload: unknown = body(f), secret: string | nu
   });
 }
 
+export function publicSlots(f: Fixture, candidatePet = f.mascotaId): Promise<ApiResult> {
+  return call(`/api/pet/public/${f.slug}/disponibilidad`, {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${f.secret}` },
+    body: JSON.stringify({ mascotaId: candidatePet, servicioId: f.servicioId, extraIds: [], fecha: FECHA }),
+  });
+}
+
+export function adminSlots(f: Fixture, candidatePet = f.mascotaId): Promise<ApiResult> {
+  const params = new URLSearchParams({ mascotaId: String(candidatePet), servicioId: String(f.servicioId), fecha: FECHA });
+  return call(`/api/pet/admin/disponibilidad?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${jwt.sign(
+      { userId: 1, localId: f.localId, rol: "admin" }, jwtSecret, { expiresIn: "1m" })}` },
+  });
+}
+
 export function admin(f: Fixture, payload = body(f)): Promise<ApiResult> {
   return call("/api/pet/admin/turnos", {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt.sign(
       { userId: 1, localId: f.localId, rol: "admin" }, jwtSecret, { expiresIn: "1m" })}` },
     body: JSON.stringify({ ...payload, clienteId: f.clienteId }),
+  });
+}
+
+export function reschedule(f: Fixture, turnoId: number, hora: string): Promise<ApiResult> {
+  return call(`/api/pet/admin/turnos/${turnoId}/reprogramar`, {
+    method: "PATCH", headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt.sign(
+      { userId: 1, localId: f.localId, rol: "admin" }, jwtSecret, { expiresIn: "1m" })}` },
+    body: JSON.stringify({ fecha: FECHA, hora }),
   });
 }
 

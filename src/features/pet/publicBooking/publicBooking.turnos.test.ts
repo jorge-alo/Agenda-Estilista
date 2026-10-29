@@ -5,11 +5,100 @@ import { contextoTemporalArgentina, DisponibilidadPetError } from "../disponibil
 import { crearReservaPublica } from "./publicBooking.service";
 import { PublicBookingError, validarCreacionPublica } from "./publicBooking.types";
 import {
-  FECHA, SIGUIENTE, body, call, context, counts, deferred, existing, fixture, highDemand, horario,
-  instrument, logs, post, q, record, rejected, session, sessionState, useBookingHarness, waitForExpiry, watchdog,
+  FECHA, SIGUIENTE, admin, adminSlots, body, call, context, counts, deferred, existing, fixture, highDemand, horario,
+  instrument, logs, post, publicSlots, q, record, rejected, session, sessionState, useBookingHarness, waitForExpiry, watchdog,
 } from "./publicBooking.turnos.test-support";
 
 useBookingHarness();
+
+async function otherPet(f: Awaited<ReturnType<typeof fixture>>): Promise<number> {
+  const pet = await q<ResultSetHeader>("INSERT INTO mascotas (local_id, nombre, activo, reserva_online_habilitada) VALUES (?, 'PET12E otra', 1, 1)", [f.localId]);
+  await q("INSERT INTO mascota_clientes (local_id, mascota_id, cliente_id) VALUES (?, ?, ?)", [f.localId, pet.insertId, f.clienteId]);
+  await q("INSERT INTO mascota_servicios (local_id, mascota_id, servicio_id, duracion_minutos) VALUES (?, ?, ?, 60)",
+    [f.localId, pet.insertId, f.servicioId]);
+  return pet.insertId;
+}
+
+test("capacidad DB 1 por defecto conserva slots públicos/admin y 409 de creación", async () => {
+  const f = await fixture();
+  const other = await otherPet(f);
+  assert.equal((await post(f)).status, 201);
+  for (const result of [await publicSlots(f, other), await adminSlots(f, other)]) {
+    assert.equal(result.status, 200);
+    assert.equal((record(result).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:00"), false);
+  }
+  rejected(await post(f, body(f, { mascotaId: other })), 409, "PET_SLOT_UNAVAILABLE");
+  assert.equal((await counts(f)).turnos, 1);
+});
+
+test("capacidad DB 2: público/admin muestran segunda plaza, no tercera; la mascota original no se duplica", async () => {
+  const f = await fixture();
+  const other = await otherPet(f);
+  const third = await otherPet(f);
+  await q("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [f.localId]);
+  assert.equal((await post(f)).status, 201);
+  for (const result of [await publicSlots(f, other), await adminSlots(f, other)]) {
+    assert.equal(result.status, 200);
+    assert.equal((record(result).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:00"), true);
+  }
+  assert.equal((record(await publicSlots(f)).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:00"), false);
+  rejected(await post(f), 409, "PET_SLOT_UNAVAILABLE");
+  assert.equal((await post(f, body(f, { mascotaId: other }))).status, 201);
+  assert.equal((record(await publicSlots(f, third)).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:00"), false);
+  rejected(await post(f, body(f, { mascotaId: third })), 409, "PET_SLOT_UNAVAILABLE");
+  assert.equal((await counts(f)).turnos, 2);
+});
+
+test("capacidad DB 2 respeta snapshots high-demand y separa ocupación activa de estados históricos", async () => {
+  const f = await fixture();
+  const other = await otherPet(f);
+  await q("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [f.localId]);
+  await existing(f, "10:00", "11:00", FECHA, "pendiente_pago", 1);
+  assert.equal((record(await publicSlots(f, other)).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:00"), true);
+  await highDemand(f, "MAX_PER_DAY", 1);
+  assert.equal((record(await publicSlots(f)).slots as unknown[]).length, 0, "pending high-demand sigue en MAX_PER_DAY");
+  await q("DELETE FROM turnos WHERE local_id = ?", [f.localId]);
+  await q("UPDATE mascotas SET alta_exigencia = 0 WHERE id = ? AND local_id = ?", [f.mascotaId, f.localId]);
+  assert.equal((await admin(f)).status, 201);
+  await q("UPDATE turnos SET alta_exigencia_snapshot = 1 WHERE local_id = ? AND mascota_id = ?", [f.localId, f.mascotaId]);
+  assert.equal((record(await publicSlots(f, other)).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:00"), false);
+  rejected(await post(f, body(f, { mascotaId: other })), 409, "PET_SLOT_UNAVAILABLE");
+});
+
+test("capacidad A=2, B=1: slots públicos de distintos tenants no se mezclan", async () => {
+  const a = await fixture();
+  const b = await fixture();
+  const aPet = await otherPet(a);
+  const bPet = await otherPet(b);
+  await q("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [a.localId]);
+  assert.equal((await post(a)).status, 201);
+  assert.equal((await post(b)).status, 201);
+  assert.equal((record(await publicSlots(a, aPet)).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:00"), true);
+  assert.equal((record(await publicSlots(b, bPet)).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:00"), false);
+  rejected(await post(b, body(b, { mascotaId: bPet })), 409, "PET_SLOT_UNAVAILABLE");
+});
+
+test("capacidad 2 cuenta máxima concurrencia: dos turnos adyacentes permiten un tercero atravesando ambos", async () => {
+  const f = await fixture();
+  const other = await otherPet(f);
+  const third = await otherPet(f);
+  await q("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [f.localId]);
+  assert.equal((await post(f)).status, 201);
+  assert.equal((await post(f, body(f, { mascotaId: other, hora: "11:00" }))).status, 201);
+  assert.equal((record(await publicSlots(f, third)).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:30"), true);
+  assert.equal((await post(f, body(f, { mascotaId: third, hora: "10:30" }))).status, 201);
+});
+
+test("candidato high-demand necesita exclusividad aun con segunda plaza libre", async () => {
+  const f = await fixture();
+  const other = await otherPet(f);
+  await q("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [f.localId]);
+  assert.equal((await post(f, body(f, { mascotaId: other }))).status, 201);
+  await highDemand(f, "MAX_PER_DAY", 1);
+  assert.equal((record(await publicSlots(f)).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:00"), false);
+  rejected(await post(f), 409, "PET_SLOT_UNAVAILABLE");
+  assert.equal((await counts(f)).turnos, 1);
+});
 
 test("PET-12E DTO exacto: cinco campos, límites/formatos estrictos y extras normalizados sin mutación", () => {
   const raw = { mascotaId: 1, servicioId: 2147483647, extraIds: [5, 3], fecha: FECHA, hora: "09:15" };
@@ -226,11 +315,11 @@ for (const full of [false, true]) {
 }
 
 for (const state of ["activo", "pendiente_pago", "cancelado", "completado"]) {
-  test(`PET-12E ocupación ${state} conserva política física PET-07`, async () => {
+  test(`PET-12E ocupación ${state} aplica política física PET sin seña`, async () => {
     const f = await fixture();
     await existing(f, "10:30", "11:30", FECHA, state);
     const result = await post(f);
-    if (["activo", "pendiente_pago"].includes(state)) rejected(result, 409, "PET_SLOT_UNAVAILABLE");
+    if (state === "activo") rejected(result, 409, "PET_SLOT_UNAVAILABLE");
     else assert.equal(result.status, 201);
   });
 }

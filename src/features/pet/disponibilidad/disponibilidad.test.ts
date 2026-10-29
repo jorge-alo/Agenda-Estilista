@@ -766,16 +766,16 @@ describe("PET-07C GET disponibilidad admin", () => {
     assert.deepEqual(json<{ slots: unknown[] }>(full).slots, []);
   });
 
-  it("activo y pendiente_pago bloquean; cancelado y completado no ocupan físicamente", async () => {
+  it("solo activo ocupa capacidad física; pendiente_pago, cancelado y completado no", async () => {
     await agregarHorario("09:00:00", "12:00:00");
-    for (const state of ["activo", "pendiente_pago"] as const) {
+    for (const state of ["activo"] as const) {
       await agregarTurno("09:00:00", "10:00:00", state, 0);
       const response = await http(queryPath({ mascotaId, servicioId, fecha: fechaFutura }));
       const startsAvailable = json<{ slots: Array<{ horaInicio: string }> }>(response).slots.map(slot => slot.horaInicio);
       assert.deepEqual(startsAvailable, ["10:00", "10:30", "11:00"]);
       await pool.query("DELETE FROM turnos WHERE local_id = ? AND mascota_id = ?", [localPet, mascotaId]);
     }
-    for (const state of ["cancelado", "completado"] as const) {
+    for (const state of ["pendiente_pago", "cancelado", "completado"] as const) {
       await agregarTurno("09:00:00", "10:00:00", state, 0);
       const response = await http(queryPath({ mascotaId, servicioId, fecha: fechaFutura }));
       assert.deepEqual(json<{ slots: Array<{ horaInicio: string }> }>(response).slots.map(slot => slot.horaInicio), ["09:00", "09:30", "10:00", "10:30", "11:00"]);

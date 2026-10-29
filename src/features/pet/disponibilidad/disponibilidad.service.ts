@@ -1,7 +1,7 @@
 import type { Pool, PoolConnection, RowDataPacket } from "mysql2/promise";
 import { pool } from "../../../config/db";
 import { calcularDuracionTotal, calcularSlotsDisponibles, horaAMinutos, minutosAHora } from "./disponibilidad.engine";
-import type { AvailabilityBlock, AvailableInterval, HighDemandInput, HighDemandInterval, HighDemandSettings, MinuteInterval } from "./disponibilidad.types";
+import type { AvailabilityBlock, AvailableInterval, HighDemandInput, HighDemandInterval, HighDemandSettings, MinuteInterval, OccupiedInterval } from "./disponibilidad.types";
 
 const INT_MAX = 2147483647;
 const TIME_ZONE = "America/Argentina/Buenos_Aires";
@@ -86,11 +86,14 @@ interface BloqueoRow extends RowDataPacket {
 }
 
 interface TurnoPetRow extends RowDataPacket {
+  mascota_id: number;
   hora: string;
   hora_fin: string | null;
   estado: "activo" | "pendiente_pago" | "cancelado" | "completado" | null;
   alta_exigencia_snapshot: number | null;
 }
+
+interface CapacidadPetRow extends RowDataPacket { pet_concurrent_capacity: number }
 
 interface VecinoHighDemandRow extends RowDataPacket {
   hora: string;
@@ -200,19 +203,19 @@ async function obtenerBloqueos(reader: SqlReader, localId: number, fecha: string
 }
 
 async function obtenerTurnosPet(reader: SqlReader, localId: number, fecha: string, excludeTurnoId?: number): Promise<{
-  occupiedIntervals: MinuteInterval[];
+  occupiedIntervals: OccupiedInterval[];
   highDemandIntervals: HighDemandInterval[];
   highDemandCount: number;
 }> {
   const exclusion = excludeTurnoId === undefined ? "" : " AND id <> ?";
   const values = excludeTurnoId === undefined ? [localId, fecha] : [localId, fecha, excludeTurnoId];
   const [rows] = await reader.query<TurnoPetRow[]>(
-    `SELECT hora, hora_fin, estado, alta_exigencia_snapshot
+    `SELECT mascota_id, hora, hora_fin, estado, alta_exigencia_snapshot
      FROM turnos
      WHERE local_id = ? AND fecha = ? AND mascota_id IS NOT NULL${exclusion}`,
     values,
   );
-  const occupiedIntervals: MinuteInterval[] = [];
+  const occupiedIntervals: OccupiedInterval[] = [];
   const highDemandIntervals: HighDemandInterval[] = [];
   let highDemandCount = 0;
 
@@ -227,13 +230,31 @@ async function obtenerTurnosPet(reader: SqlReader, localId: number, fecha: strin
 
     // The schema requires hora_fin for every PET row. Keep a runtime guard for legacy/corrupt rows.
     const interval = intervaloDb(row.hora, row.hora_fin, `turnos PET[${index}]`);
-    if (row.estado === "activo" || row.estado === "pendiente_pago") occupiedIntervals.push(interval);
+    if (row.estado === "activo") {
+      occupiedIntervals.push({ ...interval, mascotaId: numeroEnteroPositivo(row.mascota_id, "turnos.mascota_id"),
+        isHighDemand: row.alta_exigencia_snapshot === 1 });
+    }
     if (row.alta_exigencia_snapshot === 1) {
       highDemandCount += 1;
       highDemandIntervals.push(interval);
     }
   }
   return { occupiedIntervals, highDemandIntervals, highDemandCount };
+}
+
+export function validarCapacidadPet(capacity: number): number {
+  if (!Number.isInteger(capacity) || capacity < 1 || capacity > 10) {
+    throw errorIntegridad("locales.pet_concurrent_capacity tiene un valor inválido");
+  }
+  return capacity;
+}
+
+async function obtenerCapacidadPet(reader: SqlReader, localId: number): Promise<number> {
+  const [rows] = await reader.query<CapacidadPetRow[]>(
+    "SELECT pet_concurrent_capacity FROM locales WHERE id = ? AND business_type = 'PET_GROOMING'", [localId],
+  );
+  if (!rows.length) throw errorIntegridad("No se encontró la capacidad del local PET");
+  return validarCapacidadPet(rows[0].pet_concurrent_capacity);
 }
 
 function vecinoDesdeRow(row: VecinoHighDemandRow, campo: string): HighDemandInterval {
@@ -316,8 +337,10 @@ export async function obtenerSettingsHighDemand(
 export interface PrepararSlotsPetInput {
   fecha: string;
   duracionMinutos: number;
+  mascotaId: number;
   altaExigencia: boolean;
   settings: HighDemandSettings | null;
+  petConcurrentCapacity?: number;
   excludeTurnoId?: number;
 }
 
@@ -329,6 +352,8 @@ export async function prepararSlotsPorContexto(
   if (input.altaExigencia && input.settings === null) {
     throw new DisponibilidadPetError(409, "PET_HIGH_DEMAND_SETTINGS_REQUIRED", "El local debe configurar la regla de alta exigencia");
   }
+  const capacity = input.petConcurrentCapacity === undefined
+    ? await obtenerCapacidadPet(reader, localId) : validarCapacidadPet(input.petConcurrentCapacity);
   const temporal = contextoTemporalArgentina();
   if (input.fecha < temporal.fecha) return [];
 
@@ -360,6 +385,8 @@ export async function prepararSlotsPorContexto(
     schedules,
     blocks,
     durationMinutes: input.duracionMinutos,
+    petConcurrentCapacity: capacity,
+    candidateMascotaId: input.mascotaId,
     occupiedIntervals: turns.occupiedIntervals,
     minimumStartMinutes,
     highDemand,
@@ -370,7 +397,7 @@ export async function prepararDisponibilidad(
   reader: SqlReader,
   localId: number,
   consulta: ConsultaDisponibilidadPet,
-  options: { lockSettings?: boolean; excludeTurnoId?: number } = {},
+  options: { lockSettings?: boolean; excludeTurnoId?: number; petConcurrentCapacity?: number } = {},
 ): Promise<ContextoDisponibilidadPet> {
   const [mascotas] = await reader.query<MascotaRow[]>(
     "SELECT id, activo, alta_exigencia FROM mascotas WHERE id = ? AND local_id = ?",
@@ -430,8 +457,10 @@ export async function prepararDisponibilidad(
   const slots = await prepararSlotsPorContexto(reader, localId, {
     fecha: consulta.fecha,
     duracionMinutos,
+    mascotaId: consulta.mascotaId,
     altaExigencia: mascota.alta_exigencia === 1,
     settings,
+    petConcurrentCapacity: options.petConcurrentCapacity,
     excludeTurnoId: options.excludeTurnoId,
   });
 

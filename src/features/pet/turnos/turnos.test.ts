@@ -113,9 +113,9 @@ async function patchLegacyEstado(accion: "cancelar" | "completar", turnoId: numb
   });
 }
 
-async function getDisponibilidadPet(): Promise<{ status: number; data: { slots: Array<{ horaInicio: string; horaFin: string }> } }> {
-  const token = jwt.sign({ userId: 1, localId, rol: "admin" }, secret, { expiresIn: "1m" });
-  const query = new URLSearchParams({ mascotaId: String(mascotaId), servicioId: String(servicioId), fecha });
+async function getDisponibilidadPet(candidatePet = mascotaId, target = localId): Promise<{ status: number; data: { slots: Array<{ horaInicio: string; horaFin: string }> } }> {
+  const token = jwt.sign({ userId: 1, localId: target, rol: "admin" }, secret, { expiresIn: "1m" });
+  const query = new URLSearchParams({ mascotaId: String(candidatePet), servicioId: String(servicioId), fecha });
   return new Promise((resolve, reject) => {
     const req = request({ hostname: "127.0.0.1", port, method: "GET",
       path: `/api/pet/admin/disponibilidad?${query.toString()}`,
@@ -223,6 +223,13 @@ async function settings(rule: "MIN_GAP" | "MAX_PER_DAY", value: number): Promise
   );
 }
 
+async function mascotaAdicional(): Promise<number> {
+  const id = await crear("mascotas", "INSERT INTO mascotas (local_id, nombre) VALUES (?, 'PET08B.2 pet')", [localId]);
+  await pool.query("INSERT INTO mascota_clientes (local_id, mascota_id, cliente_id) VALUES (?, ?, ?)", [localId, id, clienteId]);
+  await pool.query("INSERT INTO mascota_servicios (local_id, mascota_id, servicio_id, duracion_minutos) VALUES (?, ?, ?, 60)", [localId, id, servicioId]);
+  return id;
+}
+
 before(async () => {
   for (const kind of ["PET_GROOMING", "PET_GROOMING", "BEAUTY"]) {
     locales.push(await crear("locales", "INSERT INTO locales (nombre, slug, business_type) VALUES ('PET08B fixture', ?, ?)", [randomUUID(), kind]));
@@ -262,6 +269,7 @@ beforeEach(async t => {
   await pool.query("DELETE FROM mascota_extras WHERE local_id = ?", [localId]);
   await pool.query("DELETE FROM mascotas WHERE local_id = ? AND id <> ? AND nombre = 'PET08B.2 pet'", [localId, mascotaId]);
   await pool.query("UPDATE mascotas SET activo = 1, alta_exigencia = 0 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  await pool.query("UPDATE locales SET pet_concurrent_capacity = 1 WHERE id = ?", [localId]);
   await pool.query("UPDATE servicios SET nombre = 'Service fixture', duracion = 99, activo = 1 WHERE id = ? AND local_id = ?", [servicioId, localId]);
   await pool.query("UPDATE extras SET nombre = CASE id WHEN ? THEN 'Extra PET08B one' WHEN ? THEN 'Extra PET08B two' ELSE nombre END, activo = 1 WHERE local_id = ?",
     [extraId, extraDosId, localId]);
@@ -412,13 +420,68 @@ test("bloqueo parcial y completo impiden reservar, sin filas parciales", async (
   assert.equal(await totalTurnos(), 0);
 });
 
-test("activo y pendiente_pago solapados bloquean; cancelado y completado no bloquean físicamente", async () => {
+test("solo activo solapado bloquea capacidad física; otros estados no", async () => {
   for (const estado of ["activo", "pendiente_pago", "cancelado", "completado"] as const) {
     await turnoExistente("09:30", "10:30", estado, 0);
     const response = await post();
-    assert.equal(response.status, estado === "activo" || estado === "pendiente_pago" ? 409 : 201, estado);
+    assert.equal(response.status, estado === "activo" ? 409 : 201, estado);
     await pool.query("DELETE FROM turnos WHERE local_id = ? AND mascota_id = ?", [localId, mascotaId]);
   }
+});
+
+test("capacidad default 1 aísla locales; capacidad 2 habilita segunda plaza admin, no tercera ni misma mascota", async () => {
+  const second = await mascotaAdicional();
+  const third = await mascotaAdicional();
+  await turnoExistente("09:00", "10:00", "activo", 0);
+  assert.equal((await getDisponibilidadPet(second)).data.slots.some(s => s.horaInicio === "09:00"), false);
+  await pool.query("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [localId]);
+  assert.equal((await getDisponibilidadPet(second)).data.slots.some(s => s.horaInicio === "09:00"), true);
+  assert.equal((await getDisponibilidadPet()).data.slots.some(s => s.horaInicio === "09:00"), false);
+  assert.equal((await post()).data.code, "PET_SLOT_UNAVAILABLE");
+  assert.equal((await post(body({ mascotaId: second }))).status, 201);
+  assert.equal((await getDisponibilidadPet(third)).data.slots.some(s => s.horaInicio === "09:00"), false);
+  assert.equal((await post(body({ mascotaId: third }))).data.code, "PET_SLOT_UNAVAILABLE");
+  assert.equal(await totalTurnos(), 2);
+  assert.equal((await post(body({ hora: "10:00" }))).status, 201, "misma mascota adyacente es válida");
+  assert.equal((await getDisponibilidadPet(mascotaAjenaId)).status, 404);
+  const [otherRows] = await pool.query<(RowDataPacket & { pet_concurrent_capacity: number })[]>(
+    "SELECT pet_concurrent_capacity FROM locales WHERE id = ?", [otroLocal]);
+  assert.equal(otherRows[0].pet_concurrent_capacity, 1);
+});
+
+test("capacidad 2: GET y PATCH reprogramación usan snapshots, excluyen propio y conservan original al agotarse", async () => {
+  const second = await mascotaAdicional();
+  const third = await mascotaAdicional();
+  await pool.query("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [localId]);
+  const original = await turnoExistente("09:00", "10:00", "activo", 0);
+  const movable = await crearTurnoLocal(localId, second, clienteId, servicioId, "11:00", "12:00");
+  const rejectedId = await crearTurnoLocal(localId, third, clienteId, servicioId, "12:00", "13:00");
+  const own = await getDisponibilidadReprogramar(original);
+  assert.ok((own.data.slots as Array<{ horaInicio: string }>).some(slot => slot.horaInicio === "09:00"));
+  const free = await getDisponibilidadReprogramar(movable);
+  assert.ok((free.data.slots as Array<{ horaInicio: string }>).some(slot => slot.horaInicio === "09:00"));
+  assert.equal((await patchTurno(movable, { fecha, hora: "09:00" })).status, 200);
+  const exhausted = await getDisponibilidadReprogramar(rejectedId);
+  assert.equal((exhausted.data.slots as Array<{ horaInicio: string }>).some(slot => slot.horaInicio === "09:00"), false);
+  assert.equal((await patchTurno(rejectedId, { fecha, hora: "09:00" })).data.code, "PET_SLOT_UNAVAILABLE");
+  assert.equal((await leerTurnoPet(rejectedId)).hora, "12:00:00");
+  const ownAfter = await getDisponibilidadReprogramar(original);
+  assert.equal((ownAfter.data.slots as Array<{ horaInicio: string }>).some(slot => slot.horaInicio === "09:00"), true);
+  const another = await crearTurnoLocal(localId, second, clienteId, servicioId, "10:00", "11:00");
+  assert.equal((await patchTurno(another, { fecha, hora: "09:00" })).data.code, "PET_SLOT_UNAVAILABLE");
+  assert.equal((await leerTurnoPet(another)).hora, "10:00:00");
+});
+
+test("capacidad 2: reprogramar otro turno de la misma mascota al solape libre se rechaza", async () => {
+  await pool.query("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [localId]);
+  await turnoExistente("09:00", "10:00", "activo", 0);
+  const ownOther = await turnoExistente("11:00", "12:00", "activo", 0);
+  const slots = await getDisponibilidadReprogramar(ownOther);
+  assert.equal((slots.data.slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "09:00"), false);
+  const response = await patchTurno(ownOther, { fecha, hora: "09:00" });
+  assert.equal(response.status, 409);
+  assert.equal(response.data.code, "PET_SLOT_UNAVAILABLE");
+  assert.equal((await leerTurnoPet(ownOther)).hora, "11:00:00");
 });
 
 test("MIN_GAP respeta completado y pendiente high-demand por snapshot y omite cancelado", async () => {
@@ -570,7 +633,7 @@ async function reservarConLockRetenido(
     const originalQuery = conn.query.bind(conn);
     t.mock.method(conn, "query", ((...args: Parameters<typeof conn.query>) => {
       const statement: unknown = args[0];
-      if (typeof statement === "string" && statement.includes("SELECT id, business_type FROM locales WHERE id = ? FOR UPDATE")) {
+      if (typeof statement === "string" && /^SELECT id, business_type(?:,.*)? FROM locales WHERE id = \? FOR UPDATE$/.test(statement)) {
         if (!firstConnectionSeen) {
           firstConnectionSeen = true;
           firstConnection = conn;
@@ -649,7 +712,7 @@ async function requestsTurnoConLockRetenido(
     const originalQuery = connection.query.bind(connection);
     t.mock.method(connection, "query", ((...args: Parameters<typeof connection.query>) => {
       const statement: unknown = args[0];
-      if (typeof statement === "string" && statement.includes("SELECT id, business_type FROM locales WHERE id = ? FOR UPDATE")) {
+      if (typeof statement === "string" && /^SELECT id, business_type(?:,.*)? FROM locales WHERE id = \? FOR UPDATE$/.test(statement)) {
         if (!firstConnectionSeen) {
           firstConnectionSeen = true;
           firstConnection = connection;
