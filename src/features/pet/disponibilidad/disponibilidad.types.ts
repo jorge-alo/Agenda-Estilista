@@ -3,6 +3,12 @@ export interface MinuteInterval {
   endMinutes: number;
 }
 
+/** Physical occupancy for a PET appointment; absent metadata supports legacy capacity-one callers. */
+export interface OccupiedInterval extends MinuteInterval {
+  isHighDemand?: boolean;
+  mascotaId?: number;
+}
+
 /**
  * Existing high-demand interval on an absolute day axis.
  * `dayOffset` is relative to the candidate date (0 = candidate day, -1 = previous day).
@@ -37,8 +43,12 @@ export interface CalculateAvailabilityInput {
   /** Partial or full-day blocks for the date being calculated. */
   blocks: AvailabilityBlock[];
   durationMinutes: number;
-  /** Optional existing physical occupancy intervals, already normalized. */
-  occupiedIntervals?: MinuteInterval[];
+  /** Capacity-one default preserves callers until the DB-backed context is connected. */
+  petConcurrentCapacity?: number;
+  /** Candidate pet identity; required when capacity is greater than one. */
+  candidateMascotaId?: number;
+  /** Already-normalized physical occupancy; callers must pass only active PET appointments in the new flow. */
+  occupiedIntervals?: OccupiedInterval[];
   /** Exclude candidate starts earlier than this day-minute; null disables the filter. */
   minimumStartMinutes?: number | null;
   /** Omit or set isHighDemand=false when calculating for a normal pet. */

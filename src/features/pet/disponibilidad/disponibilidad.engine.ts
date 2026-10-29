@@ -6,6 +6,7 @@ import type {
   HighDemandInterval,
   HighDemandSettings,
   MinuteInterval,
+  OccupiedInterval,
 } from "./disponibilidad.types";
 
 const MINUTES_PER_DAY = 24 * 60;
@@ -170,6 +171,40 @@ function cumpleReglaHighDemand(candidate: MinuteInterval, highDemand: HighDemand
   return (highDemand.count as number) < settings.maxPerDay;
 }
 
+/** Count actual simultaneous normal appointments, not the number of rows intersecting the candidate. */
+function maximaConcurrenciaNormal(candidate: MinuteInterval, intervals: readonly OccupiedInterval[]): number {
+  const events: Array<{ minute: number; delta: number }> = [];
+  for (const interval of intervals) {
+    events.push({ minute: Math.max(interval.startMinutes, candidate.startMinutes), delta: 1 });
+    events.push({ minute: Math.min(interval.endMinutes, candidate.endMinutes), delta: -1 });
+  }
+  // At a shared boundary, the half-open interval ending here releases its place first.
+  events.sort((a, b) => a.minute - b.minute || a.delta - b.delta);
+  let concurrent = 0;
+  let maximum = 0;
+  for (const event of events) {
+    concurrent += event.delta;
+    maximum = Math.max(maximum, concurrent);
+  }
+  return maximum;
+}
+
+function cumpleCapacidadFisica(
+  candidate: MinuteInterval,
+  occupiedIntervals: readonly OccupiedInterval[],
+  isHighDemand: boolean,
+  candidateMascotaId: number | undefined,
+  capacity: number,
+): boolean {
+  const overlapping = occupiedIntervals.filter(interval => intervalosSeSolapan(
+    candidate.startMinutes, candidate.endMinutes, interval.startMinutes, interval.endMinutes,
+  ));
+  if (isHighDemand) return overlapping.length === 0;
+  if (overlapping.some(interval => interval.isHighDemand
+    || (candidateMascotaId !== undefined && interval.mascotaId === candidateMascotaId))) return false;
+  return maximaConcurrenciaNormal(candidate, overlapping) + 1 <= capacity;
+}
+
 /**
  * Calculate deterministic PET availability candidates from already validated,
  * normalized business inputs. This function performs no IO and reads no clock.
@@ -178,12 +213,34 @@ export function calcularSlotsDisponibles(input: CalculateAvailabilityInput): Ava
   if (!Number.isSafeInteger(input.durationMinutes) || input.durationMinutes <= 0) {
     throw new RangeError("durationMinutes debe ser un entero positivo seguro");
   }
+  const capacity = input.petConcurrentCapacity === undefined ? 1 : input.petConcurrentCapacity;
+  if (!Number.isInteger(capacity) || capacity < 1 || capacity > 10) {
+    throw new RangeError("petConcurrentCapacity debe ser un entero entre 1 y 10");
+  }
+  if (input.candidateMascotaId !== undefined
+    && (!Number.isSafeInteger(input.candidateMascotaId) || input.candidateMascotaId < 1)) {
+    throw new RangeError("candidateMascotaId debe ser un entero positivo seguro");
+  }
+  if (capacity > 1 && input.candidateMascotaId === undefined) {
+    throw new RangeError("candidateMascotaId es obligatorio con capacidad mayor a uno");
+  }
   if (input.minimumStartMinutes !== undefined && input.minimumStartMinutes !== null) {
     validarMinuto(input.minimumStartMinutes, "minimumStartMinutes");
   }
   input.schedules.forEach((schedule, index) => validarIntervalo(schedule, `schedules[${index}]`));
   input.blocks.forEach(validarBloque);
-  (input.occupiedIntervals ?? []).forEach((interval, index) => validarIntervalo(interval, `occupiedIntervals[${index}]`));
+  (input.occupiedIntervals ?? []).forEach((interval, index) => {
+    validarIntervalo(interval, `occupiedIntervals[${index}]`);
+    if (interval.isHighDemand !== undefined && typeof interval.isHighDemand !== "boolean") {
+      throw new TypeError(`occupiedIntervals[${index}].isHighDemand debe ser boolean`);
+    }
+    if (interval.mascotaId !== undefined && (!Number.isSafeInteger(interval.mascotaId) || interval.mascotaId < 1)) {
+      throw new RangeError(`occupiedIntervals[${index}].mascotaId debe ser un entero positivo seguro`);
+    }
+    if (capacity > 1 && (interval.isHighDemand === undefined || interval.mascotaId === undefined)) {
+      throw new RangeError(`occupiedIntervals[${index}] requiere clasificación y mascotaId con capacidad mayor a uno`);
+    }
+  });
   validarHighDemand(input.highDemand);
 
   if (input.blocks.some(block => block.kind === "FULL_DAY")) return [];
@@ -199,11 +256,8 @@ export function calcularSlotsDisponibles(input: CalculateAvailabilityInput): Ava
         && intervalosSeSolapan(candidate.startMinutes, candidate.endMinutes, block.startMinutes, block.endMinutes))) {
         continue;
       }
-      if ((input.occupiedIntervals ?? []).some(interval => intervalosSeSolapan(
-        candidate.startMinutes, candidate.endMinutes, interval.startMinutes, interval.endMinutes,
-      ))) {
-        continue;
-      }
+      if (!cumpleCapacidadFisica(candidate, input.occupiedIntervals ?? [], input.highDemand?.isHighDemand === true,
+        input.candidateMascotaId, capacity)) continue;
       if (!cumpleReglaHighDemand(candidate, input.highDemand)) continue;
 
       results.set(`${candidate.startMinutes}:${candidate.endMinutes}`, candidate);

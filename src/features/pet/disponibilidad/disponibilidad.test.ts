@@ -17,7 +17,7 @@ import {
   minutosAHora,
 } from "./disponibilidad.engine";
 import { contextoTemporalArgentina } from "./disponibilidad.service";
-import type { CalculateAvailabilityInput, HighDemandInterval, MinuteInterval } from "./disponibilidad.types";
+import type { CalculateAvailabilityInput, HighDemandInterval, MinuteInterval, OccupiedInterval } from "./disponibilidad.types";
 import { validarPayload as validarHorarioPayload } from "../horarios/horarios.types";
 import { validarPayload as validarBloqueoPayload } from "../bloqueos/bloqueos.types";
 
@@ -177,6 +177,103 @@ describe("PET-07B motor puro de disponibilidad", () => {
         occupiedIntervals: [ventana(570, 600), ventana(660, 690)],
       });
       assert.deepEqual(starts(result), [540, 600, 630, 690, 720]);
+    });
+  });
+
+  describe("capacidad simultánea y exclusividad (motor puro)", () => {
+    const ocupado = (start: number, end: number, mascotaId: number, isHighDemand = false): OccupiedInterval =>
+      ({ ...ventana(start, end), mascotaId, isHighDemand });
+    const altaExigencia = { isHighDemand: true as const, settings: { rule: "MIN_GAP" as const, gapMinutes: 30 },
+      intervals: [] as HighDemandInterval[] };
+    const en = (start: number, end: number, overrides: Partial<CalculateAvailabilityInput> = {}) =>
+      calcularSlotsDisponibles({
+        schedules: [ventana(start, end)], blocks: [], durationMinutes: end - start,
+        candidateMascotaId: 100, petConcurrentCapacity: 2, ...overrides,
+      });
+
+    it("mantiene la capacidad uno: un solape rechaza y el default lógico preserva los callers antiguos", () => {
+      const existing = [ocupado(600, 660, 200)];
+      assert.deepEqual(en(600, 660, { petConcurrentCapacity: 1, occupiedIntervals: existing }), []);
+      assert.deepEqual(en(600, 660, { petConcurrentCapacity: undefined, occupiedIntervals: [ventana(600, 660)] }), []);
+      assert.deepEqual(en(660, 720, { petConcurrentCapacity: undefined, occupiedIntervals: [ventana(600, 660)] }), [ventana(660, 720)]);
+    });
+
+    it("con capacidad dos admite cero o un turno normal, pero no dos simultáneos", () => {
+      assert.deepEqual(en(600, 660), [ventana(600, 660)]);
+      assert.deepEqual(en(600, 660, { occupiedIntervals: [ocupado(600, 660, 200)] }), [ventana(600, 660)]);
+      assert.deepEqual(en(600, 660, { occupiedIntervals: [ocupado(600, 660, 200), ocupado(630, 690, 300)] }), []);
+    });
+
+    it("cuenta máxima simultaneidad y no filas: A 10–11, B 11–12, N 10:30–11:30", () => {
+      assert.deepEqual(en(630, 690, { occupiedIntervals: [ocupado(600, 660, 200), ocupado(660, 720, 300)] }),
+        [ventana(630, 690)]);
+    });
+
+    it("rechaza dos existentes que coinciden entre sí solo en una parte del candidato", () => {
+      assert.deepEqual(en(630, 690, { occupiedIntervals: [ocupado(600, 675, 200), ocupado(660, 720, 300)] }), []);
+    });
+
+    it("permite la adyacencia exacta y detecta solape parcial al principio y al final", () => {
+      assert.deepEqual(en(660, 720, { petConcurrentCapacity: 1, occupiedIntervals: [ocupado(600, 660, 200)] }),
+        [ventana(660, 720)]);
+      assert.deepEqual(en(600, 660, { occupiedIntervals: [ocupado(570, 615, 200), ocupado(590, 620, 300)] }), []);
+      assert.deepEqual(en(600, 660, { occupiedIntervals: [ocupado(640, 690, 200), ocupado(645, 720, 300)] }), []);
+    });
+
+    it("detecta candidatos contenidos y existentes contenidos dentro del candidato", () => {
+      assert.deepEqual(en(630, 660, { occupiedIntervals: [ocupado(600, 690, 200), ocupado(620, 680, 300)] }), []);
+      assert.deepEqual(en(600, 690, { occupiedIntervals: [ocupado(630, 660, 200), ocupado(640, 650, 300)] }), []);
+    });
+
+    it("alta exigencia queda disponible sola y es exclusiva frente a normales y alta exigencia", () => {
+      assert.deepEqual(en(600, 660, { highDemand: altaExigencia }), [ventana(600, 660)]);
+      for (const isHighDemand of [false, true]) {
+        assert.deepEqual(en(600, 660, { highDemand: altaExigencia,
+          occupiedIntervals: [ocupado(630, 690, 200, isHighDemand)] }), []);
+      }
+      assert.deepEqual(en(600, 660, { highDemand: altaExigencia,
+        occupiedIntervals: [ocupado(660, 720, 200)] }), [ventana(600, 660)]);
+    });
+
+    it("normal no se solapa con alta exigencia existente aunque quede capacidad", () => {
+      assert.deepEqual(en(600, 660, { occupiedIntervals: [ocupado(630, 690, 200, true)] }), []);
+    });
+
+    it("misma mascota solapada se rechaza incluso con plaza libre; adyacente sí y otra mascota usa la plaza", () => {
+      assert.deepEqual(en(600, 660, { occupiedIntervals: [ocupado(630, 690, 100)] }), []);
+      assert.deepEqual(en(660, 720, { occupiedIntervals: [ocupado(600, 660, 100)] }), [ventana(660, 720)]);
+      assert.deepEqual(en(600, 660, { occupiedIntervals: [ocupado(630, 690, 200)] }), [ventana(600, 660)]);
+    });
+
+    it("valida capacidad y exige metadatos al abrir la segunda plaza", () => {
+      for (const invalid of [0, -1, 11, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        assert.throws(() => en(600, 660, { petConcurrentCapacity: invalid }), /petConcurrentCapacity/);
+      }
+      assert.throws(() => en(600, 660, { petConcurrentCapacity: null as unknown as number }), /petConcurrentCapacity/);
+      assert.throws(() => en(600, 660, { candidateMascotaId: undefined }), /candidateMascotaId/);
+      assert.throws(() => en(600, 660, { occupiedIntervals: [ventana(600, 660)] }), /requiere clasificación y mascotaId/);
+    });
+
+    it("acepta el máximo configurado de diez y rechaza la undécima mascota simultánea", () => {
+      const nueve = Array.from({ length: 9 }, (_, index) => ocupado(600, 660, 200 + index));
+      assert.deepEqual(en(600, 660, { petConcurrentCapacity: 10, occupiedIntervals: nueve }), [ventana(600, 660)]);
+      assert.deepEqual(en(600, 660, { petConcurrentCapacity: 10,
+        occupiedIntervals: [...nueve, ocupado(600, 660, 300)] }), []);
+    });
+
+    it("mantiene horarios, bloqueos y grilla de 30 minutos con capacidad dos", () => {
+      const slots = calcularSlotsDisponibles({
+        schedules: [ventana(540, 720)], blocks: [{ kind: "PARTIAL", ...ventana(660, 690) }],
+        durationMinutes: 60, petConcurrentCapacity: 2, candidateMascotaId: 100,
+        occupiedIntervals: [ocupado(540, 600, 200), ocupado(570, 630, 300)],
+      });
+      assert.deepEqual(starts(slots), [600]);
+    });
+
+    it("mantiene MIN_GAP y MAX_PER_DAY como restricciones adicionales a la exclusividad", () => {
+      assert.deepEqual(en(600, 660, { highDemand: { ...altaExigencia, intervals: [ventana(570, 600)] } }), []);
+      assert.deepEqual(en(600, 660, { highDemand: { isHighDemand: true,
+        settings: { rule: "MAX_PER_DAY", maxPerDay: 1 }, count: 1 } }), []);
     });
   });
 
