@@ -6,5 +6,6 @@ const settingsRouter = Router();
 
 settingsRouter.get("/settings", authorizeRole("admin"), settings.obtener);
 settingsRouter.put("/settings", authorizeRole("admin"), settings.guardar);
+settingsRouter.put("/settings/capacity", authorizeRole("admin"), settings.guardarCapacidad);
 
 export default settingsRouter;

@@ -5,7 +5,10 @@ export interface PetSettings {
   highDemandRule: HighDemandRule | null;
   highDemandGapMinutes: number | null;
   highDemandMaxPerDay: number | null;
+  petConcurrentCapacity: number;
 }
+
+export interface PetCapacityPayload { petConcurrentCapacity: number }
 
 export interface PetSettingsPayload {
   highDemandRule: HighDemandRule;
@@ -61,4 +64,17 @@ export function validarPayload(body: unknown): PetSettingsPayload {
     throw new PetSettingsError(400, "highDemandMaxPerDay debe ser exactamente 1 para MAX_PER_DAY");
   }
   return { highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: max };
+}
+
+export function validarCapacidadPayload(body: unknown): PetCapacityPayload {
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new PetSettingsError(400, "Payload inválido");
+  const fields = body as Record<string, unknown>;
+  if (Object.keys(fields).length !== 1 || !Object.prototype.hasOwnProperty.call(fields, "petConcurrentCapacity")) {
+    throw new PetSettingsError(400, "Solo se permite petConcurrentCapacity");
+  }
+  const capacity = fields.petConcurrentCapacity;
+  if (typeof capacity !== "number" || !Number.isInteger(capacity) || capacity < 1 || capacity > 10) {
+    throw new PetSettingsError(400, "petConcurrentCapacity debe ser un entero entre 1 y 10");
+  }
+  return { petConcurrentCapacity: capacity };
 }

@@ -122,6 +122,14 @@ export function adminSlots(f: Fixture, candidatePet = f.mascotaId): Promise<ApiR
   });
 }
 
+export function updateCapacity(f: Fixture, petConcurrentCapacity: number): Promise<ApiResult> {
+  return call("/api/pet/admin/settings/capacity", {
+    method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt.sign(
+      { userId: 1, localId: f.localId, rol: "admin" }, jwtSecret, { expiresIn: "1m" })}` },
+    body: JSON.stringify({ petConcurrentCapacity }),
+  });
+}
+
 export function admin(f: Fixture, payload = body(f)): Promise<ApiResult> {
   return call("/api/pet/admin/turnos", {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt.sign(

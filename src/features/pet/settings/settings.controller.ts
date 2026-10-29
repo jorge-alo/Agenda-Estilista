@@ -33,3 +33,12 @@ export async function guardar(req: AuthRequest, res: Response) {
     return errorHttp(res, error);
   }
 }
+
+export async function guardarCapacidad(req: AuthRequest, res: Response) {
+  try {
+    const localId = localDelJwt(req);
+    return res.json(await service.guardarCapacidad(localId, req.body));
+  } catch (error: unknown) {
+    return errorHttp(res, error);
+  }
+}

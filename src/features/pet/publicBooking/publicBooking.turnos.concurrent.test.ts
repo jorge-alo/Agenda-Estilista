@@ -3,12 +3,12 @@ import { test, type TestContext } from "node:test";
 import type { PoolConnection, ResultSetHeader } from "mysql2/promise";
 import {
   FECHA, SIGUIENTE, admin, body, counts, deferred, fixture, highDemand, horario, instrument, logout,
-  pool, post, q, record, rejected, reschedule, session, sessionState, useBookingHarness, waitForExpiry, waitForLock, watchdog,
+  pool, post, q, record, rejected, reschedule, session, sessionState, updateCapacity, useBookingHarness, waitForExpiry, waitForLock, watchdog,
   type ApiResult, type Fixture,
 } from "./publicBooking.turnos.test-support";
 
 useBookingHarness();
-const isLocalLock = (sql: string) => /^SELECT id, business_type(?:,.*)? FROM locales WHERE id = \? FOR UPDATE$/.test(sql);
+const isLocalLock = (sql: string) => /^SELECT (?:id, business_type(?:,.*)?|business_type, pet_concurrent_capacity) FROM locales WHERE id = \? FOR UPDATE$/.test(sql);
 
 async function anotherOwner(f: Fixture, suffix = 1): Promise<Fixture> {
   const client = await q<ResultSetHeader>("INSERT INTO clientes (local_id, nombre, telefono) VALUES (?, 'PET12E Bea', ?)", [f.localId, `112345200${suffix}`]);
@@ -108,6 +108,31 @@ test("capacidad 2 última plaza público vs reprogramación: espera lock y conse
     "SELECT hora FROM turnos WHERE id = ? AND local_id = ?", [id, f.localId]);
   assert.equal(row.hora, "12:00:00");
 });
+
+for (const updateFirst of [true, false]) {
+  test(`cambio prospectivo capacidad vs reserva: ${updateFirst ? "PUT primero bloquea reserva" : "reserva primero se conserva"}`,
+    { timeout: 30000 }, async t => {
+      const f = await fixture();
+      const other = await anotherOwner(f);
+      assert.equal((await updateCapacity(f, 2)).status, 200);
+      assert.equal((await admin(f)).status, 201);
+      const [a, b] = await race(t, f, updateFirst ? () => updateCapacity(f, 1) : () => post(other),
+        updateFirst ? () => post(other) : () => updateCapacity(f, 1), { initialTurns: 1 });
+      if (updateFirst) {
+        assert.deepEqual(record(a), { petConcurrentCapacity: 1 });
+        rejected(b, 409, "PET_SLOT_UNAVAILABLE");
+        assert.equal((await counts(f)).turnos, 1);
+      } else {
+        assert.equal(a.status, 201);
+        assert.deepEqual(record(b), { petConcurrentCapacity: 1 });
+        assert.equal((await counts(f)).turnos, 2);
+      }
+      const [local] = await q<(import("mysql2/promise").RowDataPacket & { pet_concurrent_capacity: number })[]>(
+        "SELECT pet_concurrent_capacity FROM locales WHERE id = ?", [f.localId]);
+      assert.equal(local.pet_concurrent_capacity, 1);
+      rejected(await post(await anotherOwner(f, 2)), 409, "PET_SLOT_UNAVAILABLE");
+    });
+}
 
 test("PET-12E público vs público: dos responsables/sesiones compiten por el mismo slot", { timeout: 30000 }, async t => {
   const f = await fixture();

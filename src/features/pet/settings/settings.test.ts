@@ -15,6 +15,7 @@ const locales: number[] = [];
 const base = "/api/pet/admin/settings";
 const minGap = { highDemandRule: "MIN_GAP", highDemandGapMinutes: 300, highDemandMaxPerDay: null };
 const maxPerDay = { highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 1 };
+const capacityPath = `${base}/capacity`;
 let server: Server;
 let port: number;
 
@@ -57,6 +58,7 @@ beforeEach(async t => {
   assert.ok("mock" in t);
   t.mock.property(process, "env", { JWT_SECRET: secret });
   for (const id of locales) await pool.query("DELETE FROM pet_settings WHERE local_id = ?", [id]);
+  for (const id of locales) await pool.query("UPDATE locales SET pet_concurrent_capacity = 1 WHERE id = ?", [id]);
 });
 
 after(async () => {
@@ -101,27 +103,27 @@ for (const rol of ["estilista", "superadmin"]) {
 test("GET sin fila devuelve configured=false y nulls (no 404)", async () => {
   const result = await http("GET");
   assert.equal(result.status, 200);
-  assert.deepEqual(json(result), { configured: false, highDemandRule: null, highDemandGapMinutes: null, highDemandMaxPerDay: null });
+  assert.deepEqual(json(result), { configured: false, highDemandRule: null, highDemandGapMinutes: null, highDemandMaxPerDay: null, petConcurrentCapacity: 1 });
 });
 
 test("PUT crea MIN_GAP y GET lo refleja", async () => {
   const put = await http("PUT", minGap);
   assert.equal(put.status, 200);
-  assert.deepEqual(json(put), { configured: true, highDemandRule: "MIN_GAP", highDemandGapMinutes: 300, highDemandMaxPerDay: null });
+  assert.deepEqual(json(put), { configured: true, highDemandRule: "MIN_GAP", highDemandGapMinutes: 300, highDemandMaxPerDay: null, petConcurrentCapacity: 1 });
   assert.deepEqual(json(await http("GET")), json(put));
 });
 
 test("PUT crea MAX_PER_DAY y GET lo refleja", async () => {
   const put = await http("PUT", maxPerDay);
   assert.equal(put.status, 200);
-  assert.deepEqual(json(put), { configured: true, highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 1 });
+  assert.deepEqual(json(put), { configured: true, highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 1, petConcurrentCapacity: 1 });
   assert.deepEqual(json(await http("GET")), json(put));
 });
 
 test("PUT reemplaza MIN_GAP por MAX_PER_DAY sobre la misma fila", async () => {
   await http("PUT", minGap);
   const put = await http("PUT", maxPerDay);
-  assert.deepEqual(json(put), { configured: true, highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 1 });
+  assert.deepEqual(json(put), { configured: true, highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 1, petConcurrentCapacity: 1 });
   const [rows] = await pool.query<RowDataPacket[]>(
     "SELECT high_demand_rule, high_demand_gap_minutes, high_demand_max_per_day FROM pet_settings WHERE local_id = ?", [locales[0]]
   );
@@ -133,7 +135,7 @@ test("PUT reemplaza MIN_GAP por MAX_PER_DAY sobre la misma fila", async () => {
 test("PUT reemplaza MAX_PER_DAY por MIN_GAP sobre la misma fila", async () => {
   await http("PUT", maxPerDay);
   const put = await http("PUT", minGap);
-  assert.deepEqual(json(put), { configured: true, highDemandRule: "MIN_GAP", highDemandGapMinutes: 300, highDemandMaxPerDay: null });
+  assert.deepEqual(json(put), { configured: true, highDemandRule: "MIN_GAP", highDemandGapMinutes: 300, highDemandMaxPerDay: null, petConcurrentCapacity: 1 });
   const [rows] = await pool.query<RowDataPacket[]>(
     "SELECT high_demand_rule, high_demand_gap_minutes, high_demand_max_per_day FROM pet_settings WHERE local_id = ?", [locales[0]]
   );
@@ -153,8 +155,8 @@ test("repetir el mismo PUT es idempotente y deja una sola fila", async () => {
 test("dos tenants mantienen configuraciones independientes", async () => {
   await http("PUT", minGap, locales[0]);
   await http("PUT", maxPerDay, locales[1]);
-  assert.deepEqual(json(await http("GET", undefined, locales[0])), { configured: true, highDemandRule: "MIN_GAP", highDemandGapMinutes: 300, highDemandMaxPerDay: null });
-  assert.deepEqual(json(await http("GET", undefined, locales[1])), { configured: true, highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 1 });
+  assert.deepEqual(json(await http("GET", undefined, locales[0])), { configured: true, highDemandRule: "MIN_GAP", highDemandGapMinutes: 300, highDemandMaxPerDay: null, petConcurrentCapacity: 1 });
+  assert.deepEqual(json(await http("GET", undefined, locales[1])), { configured: true, highDemandRule: "MAX_PER_DAY", highDemandGapMinutes: null, highDemandMaxPerDay: 1, petConcurrentCapacity: 1 });
   const [rows] = await pool.query<RowDataPacket[]>("SELECT local_id FROM pet_settings WHERE local_id IN (?, ?) ORDER BY local_id", [locales[0], locales[1]]);
   assert.equal(rows.length, 2);
 });
@@ -163,8 +165,102 @@ test("el tenant sale del JWT: query con local_id ajeno no lo altera", async () =
   await http("PUT", minGap, locales[1]);
   const result = await http("GET", undefined, locales[1], `${base}?local_id=${locales[0]}`);
   assert.equal(result.status, 200);
-  assert.deepEqual(json(result), { configured: true, highDemandRule: "MIN_GAP", highDemandGapMinutes: 300, highDemandMaxPerDay: null });
+  assert.deepEqual(json(result), { configured: true, highDemandRule: "MIN_GAP", highDemandGapMinutes: 300, highDemandMaxPerDay: null, petConcurrentCapacity: 1 });
   assert.equal(json(await http("GET", undefined, locales[0])).configured, false);
+});
+
+test("capacidad: GET default 1 y PUT independiente 1→2→3→1 sin exigir high-demand", async () => {
+  assert.equal(json(await http("GET")).petConcurrentCapacity, 1);
+  for (const value of [2, 3, 1]) {
+    const result = await http("PUT", { petConcurrentCapacity: value }, locales[0], capacityPath);
+    assert.equal(result.status, 200);
+    assert.deepEqual(JSON.parse(result.body), { petConcurrentCapacity: value });
+    assert.deepEqual(json(await http("GET")), { configured: false, highDemandRule: null,
+      highDemandGapMinutes: null, highDemandMaxPerDay: null, petConcurrentCapacity: value });
+  }
+  await http("PUT", minGap);
+  await http("PUT", { petConcurrentCapacity: 2 }, locales[0], capacityPath);
+  assert.deepEqual(json(await http("GET")), { configured: true, ...minGap, petConcurrentCapacity: 2 });
+  assert.deepEqual(json(await http("PUT", maxPerDay)), { configured: true, ...maxPerDay, petConcurrentCapacity: 2 });
+});
+
+for (const invalid of [0, -1, 11, 1.5, "2", null, true, [], {}, { petConcurrentCapacity: 2, localId: 1 }]) {
+  test(`capacidad inválida ${JSON.stringify(invalid)} devuelve 400 sin escritura`, async () => {
+    const result = await http("PUT", typeof invalid === "object" && invalid !== null && !Array.isArray(invalid)
+      ? invalid : { petConcurrentCapacity: invalid }, locales[0], capacityPath);
+    assert.equal(result.status, 400);
+    assert.equal(json(await http("GET")).petConcurrentCapacity, 1);
+  });
+}
+
+test("capacity PUT requiere JWT admin PET y aísla locales", async () => {
+  for (const [id, role, expected] of [[null, "admin", 401], [locales[2], "admin", 403],
+    [locales[0], "estilista", 403], [locales[0], "superadmin", 403]] as const) {
+    assert.equal((await http("PUT", { petConcurrentCapacity: 2 }, id, capacityPath, role)).status, expected);
+  }
+  assert.equal((await http("PUT", { petConcurrentCapacity: 2 }, locales[1], capacityPath)).status, 200);
+  assert.equal(json(await http("GET", undefined, locales[0])).petConcurrentCapacity, 1);
+  assert.equal(json(await http("GET", undefined, locales[1])).petConcurrentCapacity, 2);
+  assert.equal((await http("PUT", { petConcurrentCapacity: 3 }, locales[0], `${capacityPath}?local_id=${locales[1]}`)).status, 200);
+  assert.equal(json(await http("GET", undefined, locales[1])).petConcurrentCapacity, 2);
+});
+
+test("bajar capacidad 2→1 conserva dos turnos activos confirmados y cierra nuevas plazas", async () => {
+  const id = locales[0];
+  const fecha = "2099-10-20";
+  const pets: number[] = [];
+  let serviceId = 0;
+  try {
+    for (let i = 0; i < 3; i++) {
+      const [pet] = await pool.query<ResultSetHeader>("INSERT INTO mascotas (local_id, nombre) VALUES (?, ?)", [id, `Settings pet ${i}`]);
+      pets.push(pet.insertId);
+    }
+    const [service] = await pool.query<ResultSetHeader>("INSERT INTO servicios (local_id, nombre, duracion, activo) VALUES (?, 'Settings service', 60, 1)", [id]);
+    serviceId = service.insertId;
+    await pool.query("INSERT INTO mascota_servicios (local_id, mascota_id, servicio_id, duracion_minutos) VALUES (?, ?, ?, 60)", [id, pets[2], serviceId]);
+    await pool.query("INSERT INTO horarios_local (local_id, dia_semana, hora_inicio, hora_fin) VALUES (?, ?, '09:00', '12:00')",
+      [id, new Date(Date.UTC(2099, 9, 20)).getUTCDay()]);
+    await http("PUT", { petConcurrentCapacity: 2 }, id, capacityPath);
+    for (const pet of pets.slice(0, 2)) {
+      await pool.query(`INSERT INTO turnos (local_id, fecha, hora, hora_fin, mascota_id, cliente_nombre,
+        cliente_telefono, servicio_id, servicio_nombre_snapshot, duracion_servicio_snapshot, alta_exigencia_snapshot, estado)
+        VALUES (?, ?, '10:00', '11:00', ?, 'Fixture', 'Fixture', ?, 'Fixture', 60, 0, 'activo')`, [id, fecha, pet, serviceId]);
+    }
+    const [beforeRows] = await pool.query<RowDataPacket[]>(
+      "SELECT id, estado, hora, hora_fin FROM turnos WHERE local_id = ? ORDER BY id", [id]);
+    assert.equal(beforeRows.length, 2);
+    const lowered = await http("PUT", { petConcurrentCapacity: 1 }, id, capacityPath);
+    assert.equal(lowered.status, 200);
+    const [afterRows] = await pool.query<RowDataPacket[]>(
+      "SELECT id, estado, hora, hora_fin FROM turnos WHERE local_id = ? ORDER BY id", [id]);
+    assert.deepEqual(afterRows, beforeRows);
+    const query = new URLSearchParams({ mascotaId: String(pets[2]), servicioId: String(serviceId), fecha });
+    const availability = await http("GET", undefined, id, `/api/pet/admin/disponibilidad?${query}`);
+    assert.equal(availability.status, 200);
+    assert.equal((JSON.parse(availability.body).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:00"), false);
+  } finally {
+    await pool.query("DELETE FROM turnos WHERE local_id = ?", [id]);
+    await pool.query("DELETE FROM horarios_local WHERE local_id = ?", [id]);
+    await pool.query("DELETE FROM mascota_servicios WHERE local_id = ?", [id]);
+    if (serviceId) await pool.query("DELETE FROM servicios WHERE id = ? AND local_id = ?", [serviceId, id]);
+    for (const pet of pets) await pool.query("DELETE FROM mascotas WHERE id = ? AND local_id = ?", [pet, id]);
+  }
+});
+
+test("UPDATE fallido revierte la transacción y mantiene la capacidad previa", async t => {
+  await http("PUT", { petConcurrentCapacity: 2 }, locales[0], capacityPath);
+  const original = pool.getConnection.bind(pool);
+  t.mock.method(pool, "getConnection", async () => {
+    const connection = await original();
+    const query = connection.query.bind(connection);
+    t.mock.method(connection, "query", ((...args: Parameters<typeof connection.query>) => {
+      if (String(args[0]).startsWith("UPDATE locales SET pet_concurrent_capacity")) throw new Error("TEST_UPDATE_FAILURE");
+      return query(...args);
+    }) as typeof connection.query);
+    return connection;
+  });
+  assert.equal((await http("PUT", { petConcurrentCapacity: 1 }, locales[0], capacityPath)).status, 500);
+  assert.equal(json(await http("GET")).petConcurrentCapacity, 2);
 });
 
 const invalidos: Array<[string, unknown]> = [
