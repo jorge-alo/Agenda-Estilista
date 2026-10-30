@@ -34,7 +34,7 @@ export const relojMysqlRecordatorioPet: RelojRecordatorioPet = async connection 
   return date;
 };
 
-function telefonoUtilizable(value: string | null): value is string {
+export function telefonoUtilizable(value: string | null): value is string {
   if (value === null) return false;
   try {
     return normalizeClientPhone(value) === value && evolutionNumberFromE164(value).length > 0;
@@ -43,14 +43,14 @@ function telefonoUtilizable(value: string | null): value is string {
   }
 }
 
-async function establecerUtc(connection: PoolConnection): Promise<string> {
+export async function establecerUtc(connection: PoolConnection): Promise<string> {
   const [rows] = await connection.query<TimeZoneRow[]>("SELECT @@session.time_zone AS timeZone");
   const previous = rows[0].timeZone;
   if (previous !== "+00:00") await connection.query("SET time_zone = '+00:00'");
   return previous;
 }
 
-async function restaurarZona(connection: PoolConnection, previous: string | null): Promise<void> {
+export async function restaurarZona(connection: PoolConnection, previous: string | null): Promise<void> {
   try {
     if (previous !== null && previous !== "+00:00") {
       await connection.query("SET time_zone = ?", [previous]);
@@ -83,8 +83,9 @@ export async function seleccionarRecordatoriosPet(
        WHERE t.mascota_id IS NOT NULL AND t.estado = 'activo'
          AND t.fecha = ? AND t.created_at IS NOT NULL AND t.created_at < ?
          AND t.cliente_id IS NOT NULL AND c.telefono_normalizado IS NOT NULL
-         AND NOT EXISTS (SELECT 1 FROM pet_recordatorios pr
-           WHERE pr.local_id = t.local_id AND pr.tipo = 'APPOINTMENT_REMINDER' AND pr.turno_id = t.id)
+          AND NOT EXISTS (SELECT 1 FROM pet_recordatorios pr
+            WHERE pr.local_id = t.local_id AND pr.tipo = 'APPOINTMENT_REMINDER'
+              AND pr.turno_id = t.id AND pr.estado <> 'pending')
        ORDER BY t.local_id, t.id`,
       [window.manana, fechaHoraSqlUtc(window.corteUtc)],
     );
@@ -146,21 +147,32 @@ export async function reclamarRecordatorioPet(
       `SELECT id FROM pet_recordatorios WHERE local_id = ? AND tipo = 'APPOINTMENT_REMINDER'
        AND turno_id = ? FOR UPDATE`, [localId, turnoId],
     );
-    if (existing.length) { await connection.rollback(); started = false; return null; }
-    // Pending is the discovered state. Claim it in the SAME short transaction; only sending is exposed.
-    const [insert] = await connection.query<ResultSetHeader>(
-      `INSERT INTO pet_recordatorios
-       (local_id, tipo, turno_id, cliente_id, cliente_local_id, estado, created_at)
-       VALUES (?, 'APPOINTMENT_REMINDER', ?, ?, ?, 'pending', UTC_TIMESTAMP(3))`,
-      [localId, turnoId, turno.cliente_id, localId],
-    );
-    await connection.query(
+    let recordatorioId: number;
+    if (existing.length) {
+      const [pending] = await connection.query<RowDataPacket[]>(
+        `SELECT id FROM pet_recordatorios WHERE id = ? AND local_id = ? AND tipo = 'APPOINTMENT_REMINDER'
+         AND turno_id = ? AND estado = 'pending' FOR UPDATE`, [existing[0].id, localId, turnoId],
+      );
+      if (!pending.length) { await connection.rollback(); started = false; return null; }
+      recordatorioId = pending[0].id;
+    } else {
+      const [insert] = await connection.query<ResultSetHeader>(
+        `INSERT INTO pet_recordatorios
+         (local_id, tipo, turno_id, cliente_id, cliente_local_id, estado, created_at)
+         VALUES (?, 'APPOINTMENT_REMINDER', ?, ?, ?, 'pending', UTC_TIMESTAMP(3))`,
+        [localId, turnoId, turno.cliente_id, localId],
+      );
+      recordatorioId = insert.insertId;
+    }
+    // Only one worker can claim an existing pending row. Do not create another identity.
+    const [claimed] = await connection.query<ResultSetHeader>(
       `UPDATE pet_recordatorios SET estado = 'sending', claimed_at = UTC_TIMESTAMP(3)
-       WHERE id = ? AND local_id = ? AND estado = 'pending'`, [insert.insertId, localId],
+       WHERE id = ? AND local_id = ? AND estado = 'pending'`, [recordatorioId, localId],
     );
+    if (claimed.affectedRows !== 1) throw new Error("PET_REMINDER_CLAIM_CONFLICT");
     await connection.commit();
     started = false;
-    return { recordatorioId: insert.insertId, turnoId, localId,
+    return { recordatorioId, turnoId, localId,
       clienteId: turno.cliente_id, telefonoCanonical: canonical };
   } catch (error: unknown) {
     if (started) await connection.rollback();

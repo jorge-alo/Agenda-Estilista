@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import type { Response } from "express";
 import { evolutionClient } from "./evolution.client";
-import { sendWhatsApp } from "./whatsapp.provider";
+import { getPetWhatsAppConnectionState, sendPetWhatsAppWithReceipt, sendWhatsApp } from "./whatsapp.provider";
 import { conectarWhatsApp, estadoWhatsApp } from "../whatsapp.controller";
 
 const PHONE = "5491198765432";
@@ -158,4 +158,50 @@ test("connectionState conserva estado conectado sin logging adicional", async t 
   assert.equal(result.statusCode, 200);
   assert.deepEqual(result.body, { conectado: true, estado: "open" });
   assert.deepEqual(logs, []);
+});
+
+test("PET connection preflight distinguishes close, open and an uncertain response without logging payload", async t => {
+  const logs = captureLogs(t);
+  t.mock.method(evolutionClient, "get", async (url: string) => {
+    assert.equal(url, "/instance/connectionState/42");
+    return { data: { instance: { state: "close" }, token: TOKEN } } as never;
+  });
+  assert.equal(await getPetWhatsAppConnectionState("42"), "closed");
+  t.mock.restoreAll();
+  const logsOpen = captureLogs(t);
+  t.mock.method(evolutionClient, "get", async () => ({ data: { instance: { state: "open" } } }) as never);
+  assert.equal(await getPetWhatsAppConnectionState("42"), "open");
+  assert.deepEqual(logs, []);
+  assert.deepEqual(logsOpen, []);
+});
+
+test("PET provider only accepts well-formed key.id on HTTP 2xx, never logs phone or message", async t => {
+  const logs = captureLogs(t);
+  t.mock.method(evolutionClient, "post", async (url: string, data?: unknown) => {
+    assert.deepEqual([url, data], ["/message/sendText/42", {
+      number: PHONE, textMessage: { text: MESSAGE },
+    }]);
+    return { status: 201, data: { key: { id: "EVOLUTION_ID_1" } } } as never;
+  });
+  assert.equal(await sendPetWhatsAppWithReceipt(PHONE, MESSAGE, "42"), "EVOLUTION_ID_1");
+  assert.deepEqual(logs, []);
+});
+
+test("PET provider treats malformed 2xx and HTTP error as ambiguous; logs only sanitized metadata", async t => {
+  const logs = captureLogs(t);
+  t.mock.method(evolutionClient, "post", async () => ({ status: 200, data: { message: "sent" } }) as never);
+  assert.equal(await sendPetWhatsAppWithReceipt(PHONE, MESSAGE, "42"), null);
+  t.mock.restoreAll();
+  const failure = Object.assign(new Error(`${PHONE} ${MESSAGE} ${TOKEN}`), {
+    code: "ECONNABORTED", response: { status: 504, data: { token: TOKEN } },
+  });
+  const logsFailure = captureLogs(t);
+  t.mock.method(evolutionClient, "post", async () => { throw failure; });
+  await assert.rejects(sendPetWhatsAppWithReceipt(PHONE, MESSAGE, "42"), error => error === failure);
+  assert.deepEqual(logs, []);
+  assert.deepEqual(logsFailure, [["Evolution request failed", {
+    provider: "evolution", operation: "sendText", instance: "42", status: 504, code: "ECONNABORTED",
+  }]]);
+  assert.equal(JSON.stringify(logsFailure).includes(PHONE), false);
+  assert.equal(JSON.stringify(logsFailure).includes(TOKEN), false);
 });
