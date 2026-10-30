@@ -23,6 +23,7 @@ import publicLocalRouter from "./features/publicLocal/publicLocal.routes";
 import { sanitizedErrorMiddleware } from "./middlewares/sanitizedError.middleware";
 import { petSessionPublicRouter } from "./features/pet/session/session.routes";
 import publicBookingRouter from "./features/pet/publicBooking/publicBooking.routes";
+import { isPetReminderSchedulerEnabled, startPetReminderScheduler } from "./features/pet/recordatorios/recordatorios.scheduler";
 
 if (!process.env.JWT_SECRET) {
   console.error("❌ FALTA JWT_SECRET en variables de entorno");
@@ -90,4 +91,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("🚀 Server corriendo en puerto", PORT);
    iniciarCronRecordatorios();
+   if (isPetReminderSchedulerEnabled(process.env.PET_REMINDERS_ENABLED)) {
+     startPetReminderScheduler();
+   }
 });

@@ -17,6 +17,12 @@ export interface CandidatoRecordatorioPet {
   turnoId: number; localId: number; clienteId: number; telefonoCanonical: string;
 }
 export interface ReclamoRecordatorioPet extends CandidatoRecordatorioPet { recordatorioId: number }
+export interface CursorRecordatorioPet { localId: number; turnoId: number }
+export interface PaginaRecordatoriosPet {
+  candidatos: CandidatoRecordatorioPet[];
+  cursor: CursorRecordatorioPet | null;
+  hayMas: boolean;
+}
 
 export type RelojRecordatorioPet = (connection: PoolConnection) => Promise<Date>;
 
@@ -63,16 +69,21 @@ export async function restaurarZona(connection: PoolConnection, previous: string
   }
 }
 
-/** No state changes: candidate snapshots are NEVER authority to claim. */
-export async function seleccionarRecordatoriosPet(
+/** Stable keyset (local_id, turno.id). The cursor advances over RAW rows, even invalid phones. */
+export async function seleccionarPaginaRecordatoriosPet(
+  cursor: CursorRecordatorioPet | null = null,
   reloj: RelojRecordatorioPet = relojMysqlRecordatorioPet,
-): Promise<CandidatoRecordatorioPet[]> {
+  limite = 50,
+): Promise<PaginaRecordatoriosPet> {
+  if (!Number.isSafeInteger(limite) || limite < 1 || limite > 50) {
+    throw new Error("PET_REMINDER_PAGE_LIMIT_INVALID");
+  }
   const connection = await pool.getConnection();
   let previousZone: string | null = null;
   try {
     previousZone = await establecerUtc(connection);
     const window = ventanaRecordatorioPet(await reloj(connection));
-    if (!window) return [];
+    if (!window) return { candidatos: [], cursor: null, hayMas: false };
     const [rows] = await connection.query<CandidatoRow[]>(
       `SELECT t.id, t.local_id, t.cliente_id, c.telefono_normalizado
        FROM turnos t
@@ -86,15 +97,33 @@ export async function seleccionarRecordatoriosPet(
           AND NOT EXISTS (SELECT 1 FROM pet_recordatorios pr
             WHERE pr.local_id = t.local_id AND pr.tipo = 'APPOINTMENT_REMINDER'
               AND pr.turno_id = t.id AND pr.estado <> 'pending')
-       ORDER BY t.local_id, t.id`,
-      [window.manana, fechaHoraSqlUtc(window.corteUtc)],
+         AND (? IS NULL OR t.local_id > ? OR (t.local_id = ? AND t.id > ?))
+       ORDER BY t.local_id, t.id LIMIT ?`,
+      [window.manana, fechaHoraSqlUtc(window.corteUtc), cursor?.localId ?? null,
+        cursor?.localId ?? null, cursor?.localId ?? null, cursor?.turnoId ?? null, limite],
     );
-    return rows.filter(row => telefonoUtilizable(row.telefono_normalizado)).map(row => ({
+    const last = rows[rows.length - 1];
+    return { candidatos: rows.filter(row => telefonoUtilizable(row.telefono_normalizado)).map(row => ({
       turnoId: row.id, localId: row.local_id, clienteId: row.cliente_id,
       telefonoCanonical: row.telefono_normalizado,
-    }));
+    })), cursor: last ? { localId: last.local_id, turnoId: last.id } : null,
+    hayMas: rows.length === limite };
   } finally {
     await restaurarZona(connection, previousZone);
+  }
+}
+
+/** Existing convenience selector; the scheduled worker uses bounded keyset pages instead. */
+export async function seleccionarRecordatoriosPet(
+  reloj: RelojRecordatorioPet = relojMysqlRecordatorioPet,
+): Promise<CandidatoRecordatorioPet[]> {
+  const all: CandidatoRecordatorioPet[] = [];
+  let cursor: CursorRecordatorioPet | null = null;
+  for (;;) {
+    const page = await seleccionarPaginaRecordatoriosPet(cursor, reloj);
+    all.push(...page.candidatos);
+    if (!page.hayMas || !page.cursor) return all;
+    cursor = page.cursor;
   }
 }
 
