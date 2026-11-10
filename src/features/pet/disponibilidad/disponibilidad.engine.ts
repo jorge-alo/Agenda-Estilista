@@ -171,8 +171,8 @@ function cumpleReglaHighDemand(candidate: MinuteInterval, highDemand: HighDemand
   return (highDemand.count as number) < settings.maxPerDay;
 }
 
-/** Count actual simultaneous normal appointments, not the number of rows intersecting the candidate. */
-function maximaConcurrenciaNormal(candidate: MinuteInterval, intervals: readonly OccupiedInterval[]): number {
+/** Count all simultaneous appointments, not the number of rows intersecting the candidate. */
+function maximaConcurrencia(candidate: MinuteInterval, intervals: readonly OccupiedInterval[]): number {
   const events: Array<{ minute: number; delta: number }> = [];
   for (const interval of intervals) {
     events.push({ minute: Math.max(interval.startMinutes, candidate.startMinutes), delta: 1 });
@@ -199,10 +199,9 @@ function cumpleCapacidadFisica(
   const overlapping = occupiedIntervals.filter(interval => intervalosSeSolapan(
     candidate.startMinutes, candidate.endMinutes, interval.startMinutes, interval.endMinutes,
   ));
-  if (isHighDemand) return overlapping.length === 0;
-  if (overlapping.some(interval => interval.isHighDemand
+  if (overlapping.some(interval => (isHighDemand && interval.isHighDemand)
     || (candidateMascotaId !== undefined && interval.mascotaId === candidateMascotaId))) return false;
-  return maximaConcurrenciaNormal(candidate, overlapping) + 1 <= capacity;
+  return maximaConcurrencia(candidate, overlapping) + 1 <= capacity;
 }
 
 /**

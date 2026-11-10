@@ -61,8 +61,10 @@ test("capacidad DB 2 respeta snapshots high-demand y separa ocupación activa de
   await q("UPDATE mascotas SET alta_exigencia = 0 WHERE id = ? AND local_id = ?", [f.mascotaId, f.localId]);
   assert.equal((await admin(f)).status, 201);
   await q("UPDATE turnos SET alta_exigencia_snapshot = 1 WHERE local_id = ? AND mascota_id = ?", [f.localId, f.mascotaId]);
-  assert.equal((record(await publicSlots(f, other)).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:00"), false);
-  rejected(await post(f, body(f, { mascotaId: other })), 409, "PET_SLOT_UNAVAILABLE");
+  assert.equal((record(await publicSlots(f, other)).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:00"), true);
+  assert.equal((await post(f, body(f, { mascotaId: other }))).status, 201);
+  const third = await otherPet(f);
+  rejected(await post(f, body(f, { mascotaId: third })), 409, "PET_SLOT_UNAVAILABLE");
 });
 
 test("capacidad A=2, B=1: slots públicos de distintos tenants no se mezclan", async () => {
@@ -89,16 +91,44 @@ test("capacidad 2 cuenta máxima concurrencia: dos turnos adyacentes permiten un
   assert.equal((await post(f, body(f, { mascotaId: third, hora: "10:30" }))).status, 201);
 });
 
-test("candidato high-demand necesita exclusividad aun con segunda plaza libre", async () => {
+test("candidato high-demand comparte la segunda plaza con normal y conserva MAX_PER_DAY", async () => {
   const f = await fixture();
   const other = await otherPet(f);
   await q("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [f.localId]);
   assert.equal((await post(f, body(f, { mascotaId: other }))).status, 201);
   await highDemand(f, "MAX_PER_DAY", 1);
-  assert.equal((record(await publicSlots(f)).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:00"), false);
-  rejected(await post(f), 409, "PET_SLOT_UNAVAILABLE");
-  assert.equal((await counts(f)).turnos, 1);
+  assert.equal((record(await publicSlots(f)).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:00"), true);
+  assert.equal((await post(f)).status, 201);
+  rejected(await post(f, body(f, { hora: "12:00" })), 409, "PET_SLOT_UNAVAILABLE");
+  assert.equal((await counts(f)).turnos, 2);
 });
+
+for (const rule of ["MIN_GAP", "MAX_PER_DAY"] as const) {
+  for (const highFirst of [false, true]) {
+    test(`capacidad 3 público ${rule}: ${highFirst ? "alta→normal" : "normal→alta"}, no cuarta ni segunda alta`, async () => {
+      const f = await fixture();
+      const normal = await otherPet(f);
+      const secondNormal = await otherPet(f);
+      const fourth = await otherPet(f);
+      await q("UPDATE locales SET pet_concurrent_capacity = 3 WHERE id = ?", [f.localId]);
+      await highDemand(f, rule, rule === "MIN_GAP" ? 30 : 1);
+      const normalBody = body(f, { mascotaId: normal, hora: "10:30" });
+      assert.equal((await post(f, highFirst ? body(f) : normalBody)).status, 201);
+      for (const result of [await publicSlots(f, highFirst ? normal : f.mascotaId),
+        await adminSlots(f, highFirst ? normal : f.mascotaId)]) {
+        assert.equal(result.status, 200);
+        assert.equal((record(result).slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "10:00"), true);
+      }
+      assert.equal((await post(f, highFirst ? normalBody : body(f))).status, 201);
+      await q("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [fourth, f.localId]);
+      rejected(await post(f, body(f, { mascotaId: fourth, hora: "10:30" })), 409, "PET_SLOT_UNAVAILABLE");
+      assert.equal((await post(f, body(f, { mascotaId: secondNormal, hora: "10:30" }))).status, 201);
+      await q("UPDATE mascotas SET alta_exigencia = 0 WHERE id = ? AND local_id = ?", [fourth, f.localId]);
+      rejected(await post(f, body(f, { mascotaId: fourth, hora: "10:30" })), 409, "PET_SLOT_UNAVAILABLE");
+      assert.deepEqual(await counts(f), { turnos: 3, extras: 0 });
+    });
+  }
+}
 
 test("PET-12E DTO exacto: cinco campos, límites/formatos estrictos y extras normalizados sin mutación", () => {
   const raw = { mascotaId: 1, servicioId: 2147483647, extraIds: [5, 3], fecha: FECHA, hora: "09:15" };

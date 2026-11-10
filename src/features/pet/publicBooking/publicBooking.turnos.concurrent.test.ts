@@ -89,11 +89,43 @@ for (const opponent of ["public", "admin"] as const) {
   });
 }
 
-test("capacidad 2 última plaza público vs reprogramación: espera lock y conserva el destino original", { timeout: 30000 }, async t => {
+for (const highFirst of [false, true]) {
+  test(`convivencia concurrente capacidad 2 ${highFirst ? "alta pública→normal admin" : "normal admin→alta pública"}`,
+    { timeout: 30000 }, async t => {
+      const f = await fixture();
+      const normal = await anotherOwner(f);
+      await q("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [f.localId]);
+      await highDemand(f, "MIN_GAP", 30);
+      const [a, b] = await race(t, f, highFirst ? () => post(f) : () => admin(normal),
+        highFirst ? () => admin(normal) : () => post(f));
+      assert.equal(a.status, 201);
+      assert.equal(b.status, 201);
+      assert.deepEqual(await counts(f), { turnos: 2, extras: 0 });
+    });
+}
+
+for (const overlap of [true, false]) {
+  test(`dos altas concurrentes con capacidad libre: rechaza ${overlap ? "superposición" : "MIN_GAP insuficiente"}`,
+    { timeout: 30000 }, async t => {
+      const f = await fixture();
+      const other = await anotherOwner(f);
+      await q("UPDATE locales SET pet_concurrent_capacity = 3 WHERE id = ?", [f.localId]);
+      await highDemand(f, "MIN_GAP", 60);
+      await q("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [other.mascotaId, f.localId]);
+      const [a, b] = await race(t, f, () => post(f), () => admin(other, body(other, { hora: overlap ? "10:30" : "11:30" })));
+      assert.equal(a.status, 201);
+      assert.equal(b.status, 409);
+      assert.equal(record(b).code, "PET_SLOT_UNAVAILABLE");
+      assert.deepEqual(await counts(f), { turnos: 1, extras: 0 });
+    });
+}
+
+test("capacidad mixta última plaza público vs reprogramación: espera lock y conserva el destino original", { timeout: 30000 }, async t => {
   const f = await fixture();
   const second = await anotherOwner(f, 1);
   const third = await anotherOwner(f, 2);
   await q("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [f.localId]);
+  await highDemand(f, "MIN_GAP", 30);
   const occupied = await admin(f);
   assert.equal(occupied.status, 201);
   const initial = await admin(third, body(third, { hora: "12:00" }));
@@ -221,6 +253,23 @@ test("PET-12E rollback A libera B: sin turno/extra parcial y B puede reservar", 
   assert.deepEqual(await counts(f), { turnos: 1, extras: 0 });
   assert.deepEqual(await sessionState(f), before);
 });
+
+test("rollback de creación mixta no deja turno/extras ni consume la plaza con alta exigencia existente",
+  { timeout: 30000 }, async t => {
+    const f = await fixture();
+    const normal = await anotherOwner(f);
+    await q(`INSERT INTO mascota_extras (local_id, mascota_id, extra_id, duracion_minutos)
+      SELECT local_id, ?, extra_id, duracion_minutos FROM mascota_extras WHERE local_id = ? AND mascota_id = ?`,
+    [normal.mascotaId, f.localId, f.mascotaId]);
+    await q("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [f.localId]);
+    await highDemand(f, "MIN_GAP", 30);
+    assert.equal((await admin(f)).status, 201);
+    const [a, b] = await race(t, f, () => post(normal, body(normal, { extraIds: f.extraIds })),
+      () => admin(normal), { failFirstExtra: true, initialTurns: 1 });
+    rejected(a, 500, "INTERNAL_SERVER_ERROR");
+    assert.equal(b.status, 201);
+    assert.deepEqual(await counts(f), { turnos: 2, extras: 0 });
+  });
 
 test("PET-12E logout confirma mientras booking espera local: revalidación rechaza", { timeout: 30000 }, async t => {
   const f = await fixture();

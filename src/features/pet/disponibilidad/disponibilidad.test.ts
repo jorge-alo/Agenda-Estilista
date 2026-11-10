@@ -180,7 +180,7 @@ describe("PET-07B motor puro de disponibilidad", () => {
     });
   });
 
-  describe("capacidad simultánea y exclusividad (motor puro)", () => {
+  describe("capacidad simultánea y convivencia de exigencias (motor puro)", () => {
     const ocupado = (start: number, end: number, mascotaId: number, isHighDemand = false): OccupiedInterval =>
       ({ ...ventana(start, end), mascotaId, isHighDemand });
     const altaExigencia = { isHighDemand: true as const, settings: { rule: "MIN_GAP" as const, gapMinutes: 30 },
@@ -225,18 +225,59 @@ describe("PET-07B motor puro de disponibilidad", () => {
       assert.deepEqual(en(600, 690, { occupiedIntervals: [ocupado(630, 660, 200), ocupado(640, 650, 300)] }), []);
     });
 
-    it("alta exigencia queda disponible sola y es exclusiva frente a normales y alta exigencia", () => {
+    it("alta exigencia comparte con normales pero no con otra alta exigencia", () => {
       assert.deepEqual(en(600, 660, { highDemand: altaExigencia }), [ventana(600, 660)]);
-      for (const isHighDemand of [false, true]) {
-        assert.deepEqual(en(600, 660, { highDemand: altaExigencia,
-          occupiedIntervals: [ocupado(630, 690, 200, isHighDemand)] }), []);
-      }
+      assert.deepEqual(en(600, 660, { highDemand: altaExigencia,
+        occupiedIntervals: [ocupado(630, 690, 200)] }), [ventana(600, 660)]);
+      assert.deepEqual(en(600, 660, { highDemand: altaExigencia,
+        occupiedIntervals: [ocupado(630, 690, 200, true)] }), []);
       assert.deepEqual(en(600, 660, { highDemand: altaExigencia,
         occupiedIntervals: [ocupado(660, 720, 200)] }), [ventana(600, 660)]);
     });
 
-    it("normal no se solapa con alta exigencia existente aunque quede capacidad", () => {
-      assert.deepEqual(en(600, 660, { occupiedIntervals: [ocupado(630, 690, 200, true)] }), []);
+    it("normal comparte con alta exigencia existente si queda capacidad", () => {
+      assert.deepEqual(en(600, 660, { occupiedIntervals: [ocupado(630, 690, 200, true)] }), [ventana(600, 660)]);
+    });
+
+    it("capacidad 1, 2 y 3 cuenta una plaza por mascota en ambos sentidos", () => {
+      for (const capacity of [1, 2, 3]) {
+        for (const candidateHighDemand of [false, true]) {
+          const existing = Array.from({ length: capacity - 1 }, (_, index) =>
+            ocupado(600, 660, 200 + index, !candidateHighDemand && index === 0));
+          const context = { petConcurrentCapacity: capacity,
+            highDemand: candidateHighDemand ? altaExigencia : undefined, occupiedIntervals: existing };
+          assert.deepEqual(en(600, 660, context), [ventana(600, 660)]);
+          assert.deepEqual(en(600, 660, { ...context, occupiedIntervals: [...existing, ocupado(630, 690, 300)] }), []);
+        }
+      }
+    });
+
+    it("concurrencia mixta usa el máximo simultáneo, no filas, y detecta excesos parciales", () => {
+      assert.deepEqual(en(630, 690, { occupiedIntervals: [ocupado(600, 660, 200, true), ocupado(660, 720, 300)] }),
+        [ventana(630, 690)]);
+      assert.deepEqual(en(630, 690, { occupiedIntervals: [ocupado(600, 675, 200, true), ocupado(660, 720, 300)] }), []);
+      assert.deepEqual(en(630, 690, { highDemand: altaExigencia,
+        occupiedIntervals: [ocupado(600, 660, 200), ocupado(660, 720, 300)] }), [ventana(630, 690)]);
+    });
+
+    it("alta exigencia no duplica la misma mascota aunque el snapshot anterior sea normal", () => {
+      assert.deepEqual(en(600, 660, { highDemand: altaExigencia, occupiedIntervals: [ocupado(630, 690, 100)] }), []);
+    });
+
+    it("MIN_GAP solo separa altas exigencias; normales pueden ocupar el descanso", () => {
+      const previous = ventana(540, 600);
+      assert.deepEqual(en(600, 660, { highDemand: { ...altaExigencia, intervals: [previous] } }), []);
+      assert.deepEqual(en(630, 690, { highDemand: { ...altaExigencia, intervals: [previous] },
+        occupiedIntervals: [ocupado(600, 660, 200)] }), [ventana(630, 690)]);
+      assert.deepEqual(en(600, 660, { highDemand: { isHighDemand: false, settings: altaExigencia.settings,
+        intervals: [previous] } }), [ventana(600, 660)]);
+    });
+
+    it("MAX_PER_DAY permite convivencia sin relajar máximo ni solapes alta-alta", () => {
+      const highDemand = { isHighDemand: true, settings: { rule: "MAX_PER_DAY" as const, maxPerDay: 1 }, count: 0 };
+      assert.deepEqual(en(600, 660, { highDemand, occupiedIntervals: [ocupado(600, 660, 200)] }), [ventana(600, 660)]);
+      assert.deepEqual(en(600, 660, { highDemand: { ...highDemand, count: 1 } }), []);
+      assert.deepEqual(en(600, 660, { highDemand, occupiedIntervals: [ocupado(630, 690, 200, true)] }), []);
     });
 
     it("misma mascota solapada se rechaza incluso con plaza libre; adyacente sí y otra mascota usa la plaza", () => {
@@ -270,7 +311,7 @@ describe("PET-07B motor puro de disponibilidad", () => {
       assert.deepEqual(starts(slots), [600]);
     });
 
-    it("mantiene MIN_GAP y MAX_PER_DAY como restricciones adicionales a la exclusividad", () => {
+    it("mantiene MIN_GAP y MAX_PER_DAY como restricciones adicionales a la capacidad", () => {
       assert.deepEqual(en(600, 660, { highDemand: { ...altaExigencia, intervals: [ventana(570, 600)] } }), []);
       assert.deepEqual(en(600, 660, { highDemand: { isHighDemand: true,
         settings: { rule: "MAX_PER_DAY", maxPerDay: 1 }, count: 1 } }), []);

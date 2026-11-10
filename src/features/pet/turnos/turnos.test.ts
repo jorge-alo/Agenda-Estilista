@@ -449,6 +449,92 @@ test("capacidad default 1 aísla locales; capacidad 2 habilita segunda plaza adm
   assert.equal(otherRows[0].pet_concurrent_capacity, 1);
 });
 
+for (const rule of ["MIN_GAP", "MAX_PER_DAY"] as const) {
+  for (const highFirst of [false, true]) {
+    test(`admin capacidad 3 ${rule}: convivencia ${highFirst ? "alta→normal" : "normal→alta"} y límite total`, async () => {
+      const normal = await mascotaAdicional();
+      const secondNormal = await mascotaAdicional();
+      const fourth = await mascotaAdicional();
+      await pool.query("UPDATE locales SET pet_concurrent_capacity = 3 WHERE id = ?", [localId]);
+      await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+      await settings(rule, rule === "MIN_GAP" ? 30 : 1);
+      const normalBody = body({ mascotaId: normal, hora: "09:30" });
+      assert.equal((await post(highFirst ? body() : normalBody)).status, 201);
+      const available = await getDisponibilidadPet(highFirst ? normal : mascotaId);
+      assert.equal(available.status, 200);
+      assert.equal(available.data.slots.some(s => s.horaInicio === "09:00"), true);
+      assert.equal((await post(highFirst ? normalBody : body())).status, 201);
+      await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [fourth, localId]);
+      assert.equal((await post(body({ mascotaId: fourth, hora: "09:30" }))).data.code, "PET_SLOT_UNAVAILABLE");
+      assert.equal((await post(body({ mascotaId: secondNormal, hora: "09:30" }))).status, 201);
+      await pool.query("UPDATE mascotas SET alta_exigencia = 0 WHERE id = ? AND local_id = ?", [fourth, localId]);
+      assert.equal((await post(body({ mascotaId: fourth, hora: "09:30" }))).data.code, "PET_SLOT_UNAVAILABLE");
+      assert.equal(await totalTurnos(), 3);
+    });
+  }
+}
+
+for (const movingHigh of [false, true]) {
+  test(`reprogramación ${movingHigh ? "alta sobre normal" : "normal sobre alta"}: comparte y conserva original ante rechazo`, async () => {
+    const stationary = await mascotaAdicional();
+    const otherHigh = await mascotaAdicional();
+    await pool.query("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [localId]);
+    await settings("MIN_GAP", 30);
+    await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id IN (?, ?) AND local_id = ?",
+      [movingHigh ? mascotaId : stationary, otherHigh, localId]);
+    const fixed = await post(body({ mascotaId: stationary }));
+    assert.equal(fixed.status, 201);
+    const movable = await post(body({ hora: "11:00", extraIds: [extraId] }));
+    assert.equal(movable.status, 201);
+    const id = Number(movable.data.id);
+    const slots = await getDisponibilidadReprogramar(id);
+    assert.equal((slots.data.slots as Array<{ horaInicio: string }>).some(s => s.horaInicio === "09:30"), true);
+    assert.equal((await patchTurno(id, { fecha, hora: "09:30" })).status, 200);
+    const before = await leerTurnoPet(id);
+    assert.equal(before.hora_fin, "10:45:00");
+    const high = await post(body({ mascotaId: otherHigh, hora: "11:30" }));
+    assert.equal(high.status, 201);
+    const unavailableHour = movingHigh ? "10:00" : "09:00";
+    // Alta: gap de 15 < 30 respecto del vecino posterior. Normal: capacidad llena al inicio.
+    if (!movingHigh) {
+      const third = await mascotaAdicional();
+      await crearTurnoLocal(localId, third, clienteId, servicioId, "09:00", "09:30");
+    }
+    assert.equal((await patchTurno(id, { fecha, hora: unavailableHour })).data.code, "PET_SLOT_UNAVAILABLE");
+    assert.deepEqual(await leerTurnoPet(id), before);
+  });
+}
+
+test("reprogramación mixta revierte UPDATE y conserva extras ante error antes del commit", async t => {
+  const normal = await mascotaAdicional();
+  await pool.query("UPDATE locales SET pet_concurrent_capacity = 2 WHERE id = ?", [localId]);
+  await pool.query("UPDATE mascotas SET alta_exigencia = 1 WHERE id = ? AND local_id = ?", [mascotaId, localId]);
+  await settings("MIN_GAP", 30);
+  assert.equal((await post(body({ mascotaId: normal }))).status, 201);
+  const created = await post(body({ hora: "11:00", extraIds: [extraId] }));
+  assert.equal(created.status, 201);
+  const id = Number(created.data.id);
+  const before = await leerTurnoPet(id);
+  const [extrasBefore] = await pool.query<RowDataPacket[]>("SELECT * FROM turno_extras WHERE turno_id = ?", [id]);
+  const get = pool.getConnection.bind(pool);
+  t.mock.method(pool, "getConnection", async () => {
+    const connection = await get();
+    const query = connection.query.bind(connection);
+    t.mock.method(connection, "query", ((...args: Parameters<typeof connection.query>) => {
+      const result = query(...args);
+      if (String(args[0]).includes("SET fecha = ?, hora = ?, hora_fin = ?, alta_exigencia_snapshot = ?")) {
+        return result.then(() => { throw new Error("PET_MIXED_RESCHEDULE_ROLLBACK"); });
+      }
+      return result;
+    }) as typeof connection.query);
+    return connection;
+  });
+  assert.equal((await patchTurno(id, { fecha, hora: "09:30" })).status, 500);
+  assert.deepEqual(await leerTurnoPet(id), before);
+  const [extrasAfter] = await pool.query<RowDataPacket[]>("SELECT * FROM turno_extras WHERE turno_id = ?", [id]);
+  assert.deepEqual(extrasAfter, extrasBefore);
+});
+
 test("capacidad 2: GET y PATCH reprogramación usan snapshots, excluyen propio y conservan original al agotarse", async () => {
   const second = await mascotaAdicional();
   const third = await mascotaAdicional();
