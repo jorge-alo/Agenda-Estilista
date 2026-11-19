@@ -1,7 +1,8 @@
 # PET — RECURRENCE_DAY_30 (piloto, apagado por defecto)
 
-Guía autocontenida del backend. Código de etapas 1–4 y E2E validado solo en Docker;
-esta entrega no habilita recordatorios, carga contactos reales ni migra Railway.
+Guía autocontenida del backend. Código de etapas 1–4 y E2E validado en Docker. La migración
+de contactos se aplicó manualmente también en Railway, pero el backend de `0f442` no está
+publicado según confirmación del operador; no hay cargas reales ni activación mensual.
 
 ## Contrato funcional
 
@@ -47,7 +48,13 @@ Reutiliza `pet_recordatorios` y su UNIQUE
 de recordatorios versionado en `20261030_001`–`003`.
 La nueva migración es `migrations/20261119_001_pet_recurrencia_contactos.sql`:
 
-- Aplicada y validada **solo Docker** (`agenda_mysql / agenda_db`, MySQL 8.4.11).
+- Aplicada y validada en Docker (`agenda_mysql / agenda_db`, MySQL 8.4.11) y aplicada
+  manualmente en Railway (MySQL Community Server 9.7.4, base `railway`), según confirmación
+  del usuario. PK/FK/tres CHECK y trigger verificados; 0 filas en Railway.
+- Respaldo Railway previo mediante DBeaver/mysqldump, con segunda copia
+  `--set-gtid-purged=OFF`; estructura, datos, triggers y fin del dump verificados.
+  No se probó restauración. DBeaver requirió ejecutar el bloque `DELIMITER` como script.
+  Evidencia operativa y límites en `docs/railway-recurrence-day-30.md`.
 - SQL aplicado sin modificaciones. Su encabezado es histórico; no editar ni reejecutar
   una migración aplicada. Verificar el estado real por metadatos antes de cualquier despliegue.
 - Tabla por `(local_id,telefono_normalizado)`, CHECKs y FK CASCADE al local.
@@ -126,8 +133,9 @@ cero residuos. AUTO_INCREMENT avanza por fixtures, sin reiniciarlo. Sin HTTP ext
 
 ## Pendientes antes de producción
 
-Confirmar esquema real y migraciones previas; obtener aprobación separada de migración
-Railway y despliegue. Definir/verificar cohorte, IDs piloto, evidencia y responsable de bajas;
+Confirmar migraciones previas requeridas por el backend antes de publicarlo. La migración
+de contactos Railway está aplicada, pero no acredita la publicación del backend. Obtener
+aprobación separada para el despliegue. Definir/verificar cohorte, IDs piloto, evidencia y responsable de bajas;
 aprobar la operación productiva (los CLI actuales son solo locales). Validar URL/instancia
 Evolution y entrega bajo autorización. Después evaluar activación explícita de flag/lista.
 No hay panel ni procesamiento automático de respuestas de baja.
