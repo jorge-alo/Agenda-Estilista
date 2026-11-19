@@ -24,6 +24,7 @@ import { sanitizedErrorMiddleware } from "./middlewares/sanitizedError.middlewar
 import { petSessionPublicRouter } from "./features/pet/session/session.routes";
 import publicBookingRouter from "./features/pet/publicBooking/publicBooking.routes";
 import { isPetReminderSchedulerEnabled, startPetReminderScheduler } from "./features/pet/recordatorios/recordatorios.scheduler";
+import { startPetRecurrenceScheduler } from "./features/pet/recordatorios/recurrencia.scheduler";
 
 if (!process.env.JWT_SECRET) {
   console.error("❌ FALTA JWT_SECRET en variables de entorno");
@@ -94,4 +95,5 @@ app.listen(PORT, () => {
    if (isPetReminderSchedulerEnabled(process.env.PET_REMINDERS_ENABLED)) {
      startPetReminderScheduler();
    }
+   startPetRecurrenceScheduler();
 });
