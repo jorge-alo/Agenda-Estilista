@@ -12,6 +12,7 @@ import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { InvalidClientPhoneError, normalizeClientPhone } from "../../../shared/phone/normalizeClientPhone";
 import { ClientPhoneConflictError, clientPhoneDuplicateKey } from "../../../shared/phone/clientPhoneDuplicate";
 import { bloquearMascotaOnline, MascotaReservaOnlineError, validarElegibilidadOnline } from "./mascotas.online";
+import { inicializarPreferenciaD30, leerPreferenciaD30 } from "../recordatorios/recurrencia.preferencias";
 export { MascotaReservaOnlineError } from "./mascotas.online";
 
 export interface Mascota {
@@ -196,7 +197,10 @@ export const obtenerMascotaConResponsables = async (localId: number, mascotaId: 
     [mascotaId, localId]
   );
 
-  return { ...mascota, responsables };
+  const enriched = await Promise.all((responsables as Responsable[]).map(async responsable => ({
+    ...responsable, recordatoriosD30: await leerPreferenciaD30(pool, localId, responsable.id),
+  })));
+  return { ...mascota, responsables: enriched };
 };
 
 export const editarMascota = async (localId: number, mascotaId: number, payload: EditarMascotaPayload): Promise<Mascota> => {
@@ -308,43 +312,52 @@ export const editarReservaOnline = async (
   }
 };
 
-export const crearResponsable = async (localId: number, payload: CrearResponsablePayload): Promise<{ id: number; nombre: string; telefono: string; local_id: number; created_at: string; isNew: boolean }> => {
+export const crearResponsable = async (localId: number, payload: CrearResponsablePayload, operadorId: number): Promise<{ id: number; nombre: string; telefono: string; local_id: number; created_at: string; isNew: boolean }> => {
   const canonical = normalizeClientPhone(payload.telefono);
   const display = payload.telefono.trim();
-  const [existing]: any = await pool.query(
-    `SELECT id, nombre, telefono, local_id, created_at FROM clientes WHERE telefono_normalizado = ? AND local_id = ?`,
-    [canonical, localId]
-  );
-
-  if (existing.length > 0) {
-    return { ...existing[0], isNew: false };
-  }
-
-  let id: number;
+  const connection = await pool.getConnection();
   try {
-    const [result]: any = await pool.query(
-      `INSERT INTO clientes (nombre, telefono, telefono_normalizado, local_id) VALUES (?, ?, ?, ?)`,
-      [payload.nombre, display, canonical, localId]
-    );
-    id = result.insertId;
-  } catch (error) {
-    const key = clientPhoneDuplicateKey(error);
-    if (!key) throw error;
-    const [winner]: any = await pool.query(
-      `SELECT id, nombre, telefono, local_id, created_at FROM clientes
-       WHERE telefono_normalizado = ? AND local_id = ?`,
+    await connection.beginTransaction();
+    await connection.query('SELECT id FROM locales WHERE id = ? FOR UPDATE', [localId]);
+    const [existing] = await connection.query<(RowDataPacket & Responsable)[]>(
+      `SELECT id, nombre, telefono, local_id, created_at FROM clientes WHERE telefono_normalizado = ? AND local_id = ?`,
       [canonical, localId]
     );
-    if (!winner.length) throw new ClientPhoneConflictError();
-    return { ...winner[0], isNew: false };
-  }
 
-  const [rows]: any = await pool.query(
-    `SELECT id, nombre, telefono, local_id, created_at FROM clientes WHERE id = ? AND local_id = ?`,
-    [id, localId]
-  );
+    if (existing.length > 0) {
+      await connection.commit();
+      return { ...existing[0], isNew: false };
+    }
 
-  return { ...rows[0], isNew: true };
+    let id: number;
+    try {
+      const [result] = await connection.query<ResultSetHeader>(
+        `INSERT INTO clientes (nombre, telefono, telefono_normalizado, local_id) VALUES (?, ?, ?, ?)`,
+        [payload.nombre, display, canonical, localId]
+      );
+      id = result.insertId;
+    } catch (error) {
+      const key = clientPhoneDuplicateKey(error);
+      if (!key) throw error;
+      const [winner] = await connection.query<(RowDataPacket & Responsable)[]>(
+        `SELECT id, nombre, telefono, local_id, created_at FROM clientes
+         WHERE telefono_normalizado = ? AND local_id = ? FOR SHARE`,
+        [canonical, localId]
+      );
+      if (!winner.length) throw new ClientPhoneConflictError();
+      await connection.commit();
+      return { ...winner[0], isNew: false };
+    }
+
+    await inicializarPreferenciaD30(connection, localId, id, canonical, payload.recordatoriosD30 ?? true, operadorId);
+    const [rows] = await connection.query<(RowDataPacket & Responsable)[]>(
+      `SELECT id, nombre, telefono, local_id, created_at FROM clientes WHERE id = ? AND local_id = ?`,
+      [id, localId]
+    );
+    await connection.commit();
+    return { ...rows[0], isNew: true };
+  } catch (error: unknown) { await connection.rollback(); throw error; }
+  finally { connection.release(); }
 };
 
 export const asociarResponsable = async (localId: number, mascotaId: number, payload: AsociarResponsablePayload): Promise<void> => {

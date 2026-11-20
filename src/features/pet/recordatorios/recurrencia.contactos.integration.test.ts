@@ -130,7 +130,7 @@ test("INSERT real: FK rechaza local inexistente y CHECKs rechazan estados/eviden
     [phone,"autorizada",f.client,"2026-11-01"," ",null,null],
     [phone,"autorizada",f.client,"2026-11-01",tag,"2026-11-02",tag],
     [phone,"baja",null,null,null,null,tag],
-    [phone,"baja",f.client,null,null,"2026-11-01",tag],
+    [phone,"baja",f.client,null,tag,"2026-11-01",tag],
   ];
   for (const values of cases) await assert.rejects(pool.query(sql, [f.local,...values]), { errno: 3819 });
   assert.equal((await contacts(f.local)).length, 0);

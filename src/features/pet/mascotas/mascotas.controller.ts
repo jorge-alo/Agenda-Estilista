@@ -155,7 +155,9 @@ export const crearResponsable = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: validation.errores.join(", ") });
     }
 
-    const responsable = await petService.crearResponsable(localId, validation.data!);
+    const operadorId: unknown = req.user?.userId;
+    if (typeof operadorId !== 'number' || !Number.isSafeInteger(operadorId) || operadorId < 1) return res.status(401).json({ error: 'No autorizado' });
+    const responsable = await petService.crearResponsable(localId, validation.data!, operadorId);
     return res.status(responsable.isNew ? 201 : 200).json(responsable);
   } catch (error: any) {
     if (error instanceof InvalidClientPhoneError) return res.status(400).json({ error: error.code });

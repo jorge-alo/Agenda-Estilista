@@ -55,7 +55,9 @@ export async function convertir(req: AuthRequest, res: Response) {
     const localId = req.user?.localId;
     if (!Number.isSafeInteger(localId) || localId <= 0) return res.status(401).json({ error: "No autorizado" });
     const id = validarId(req.params.id);
-    const resultado = await service.convertir(localId, id, req.body);
+    const operadorId: unknown = req.user?.userId;
+    if (typeof operadorId !== 'number' || !Number.isSafeInteger(operadorId) || operadorId < 1) return res.status(401).json({ error: 'No autorizado' });
+    const resultado = await service.convertir(localId, id, req.body, operadorId);
     return res.status(201).json(resultado);
   } catch (error) { return errorResponse(error, res); }
 }

@@ -1,4 +1,5 @@
 import type { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from "mysql2/promise";
+import { randomUUID } from "node:crypto";
 import { pool } from "../../../config/db";
 import { relojMysqlRecordatorioPet, telefonoUtilizable, type RelojRecordatorioPet } from "./recordatorios.service";
 import { fechaHoraSqlUtc } from "./recordatorios.time";
@@ -39,6 +40,9 @@ export async function prepararFuenteContactosRecurrencia(
     const row = rows[0];
     if (!row) return null;
     if (row.estado === "baja") return { estado: "baja" };
+    if (row.estado === "habilitada" && row.cliente_id_autorizado !== null) {
+      return { estado: "habilitada", localId, clienteId: row.cliente_id_autorizado, telefonoCanonical: contacto.telefonoCanonical };
+    }
     if (row.estado !== "autorizada" || row.cliente_id_autorizado === null
       || !row.verificada_at_utc || !row.referencia_verificacion) {
       throw new ContactoRecurrenciaError("PET_RECURRENCE_CONTACT_INVALID");
@@ -124,7 +128,7 @@ export async function operarContactosRecurrencia(
         resultados.push({ posicion, resultado: item.tipo === "autorizacion" ? "baja_respetada" : "sin_cambios" });
         continue;
       }
-      if (old && old.estado !== "autorizada") throw new ContactoRecurrenciaError("PET_RECURRENCE_CONTACT_INVALID");
+      if (old && old.estado !== "autorizada" && old.estado !== "habilitada") throw new ContactoRecurrenciaError("PET_RECURRENCE_CONTACT_INVALID");
       if (item.tipo === "autorizacion") {
         const [clients] = await connection.query<(RowDataPacket & { telefono_normalizado: string | null })[]>(
           `SELECT telefono_normalizado FROM clientes WHERE id = ? AND local_id = ?${aplicar ? " FOR SHARE" : ""}`,
@@ -147,8 +151,8 @@ export async function operarContactosRecurrencia(
           const [result] = await connection.query<ResultSetHeader>(
             `INSERT INTO pet_recurrencia_contactos
               (local_id, telefono_normalizado, estado, cliente_id_autorizado, verificada_at,
-               referencia_verificacion, created_at, updated_at)
-             VALUES (?, ?, 'autorizada', ?, ?, ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
+                referencia_verificacion, origen, created_at, updated_at)
+             VALUES (?, ?, 'autorizada', ?, ?, ?, 'importacion', UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
             [opciones.localId, item.telefonoCanonical, item.clienteId,
               fechaHoraSqlUtc(new Date(item.verificadaAt)), item.referenciaVerificacion],
           );
@@ -159,13 +163,13 @@ export async function operarContactosRecurrencia(
         if (aplicar) {
           const [result] = old ? await connection.query<ResultSetHeader>(
             `UPDATE pet_recurrencia_contactos SET estado = 'baja', baja_at = UTC_TIMESTAMP(3),
-              referencia_baja = ?, updated_at = UTC_TIMESTAMP(3)
-             WHERE local_id = ? AND telefono_normalizado = ? AND estado = 'autorizada'`,
-            [item.referenciaBaja, opciones.localId, item.telefonoCanonical],
+              referencia_baja = ?, origen='importacion', operador_id=NULL, operacion_id=?, updated_at = UTC_TIMESTAMP(3)
+             WHERE local_id = ? AND telefono_normalizado = ? AND estado IN ('autorizada','habilitada')`,
+            [item.referenciaBaja, randomUUID(), opciones.localId, item.telefonoCanonical],
           ) : await connection.query<ResultSetHeader>(
             `INSERT INTO pet_recurrencia_contactos
-              (local_id, telefono_normalizado, estado, baja_at, referencia_baja, created_at, updated_at)
-             VALUES (?, ?, 'baja', UTC_TIMESTAMP(3), ?, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
+              (local_id, telefono_normalizado, estado, baja_at, referencia_baja, origen, created_at, updated_at)
+             VALUES (?, ?, 'baja', UTC_TIMESTAMP(3), ?, 'importacion', UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
             [opciones.localId, item.telefonoCanonical, item.referenciaBaja],
           );
           if (result.affectedRows !== 1) throw new ContactoRecurrenciaError("PET_RECURRENCE_WRITE_CONFLICT");

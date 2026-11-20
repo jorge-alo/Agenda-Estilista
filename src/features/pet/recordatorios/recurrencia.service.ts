@@ -14,7 +14,7 @@ export interface ContactoRecurrenciaPet {
   telefonoCanonical: string;
 }
 
-export type AutorizacionRecurrenciaPet = { estado: "baja" } | (ContactoRecurrenciaPet & {
+export type AutorizacionRecurrenciaPet = { estado: "baja" } | (ContactoRecurrenciaPet & { estado: "habilitada" }) | (ContactoRecurrenciaPet & {
   estado: "autorizada";
   verificadaAt: string;
   referenciaVerificacion: string;
@@ -206,6 +206,10 @@ async function exclusionAutorizacion(
     const permiso = await resolver(contacto);
     if (permiso === null) return "AUTORIZACION_PENDIENTE";
     if (permiso.estado === "baja") return "BAJA";
+    if (permiso.estado === "habilitada") {
+      return permiso.localId === localId && permiso.clienteId === contacto.clienteId
+        && permiso.telefonoCanonical === contacto.telefonoCanonical ? null : "AUTORIZACION_NO_VERIFICABLE";
+    }
     const verificada = new Date(permiso.verificadaAt);
     if (permiso.estado !== "autorizada" || permiso.localId !== localId
       || permiso.clienteId !== contacto.clienteId || permiso.telefonoCanonical !== contacto.telefonoCanonical

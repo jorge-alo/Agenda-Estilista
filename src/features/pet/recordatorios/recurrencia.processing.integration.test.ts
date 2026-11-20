@@ -4,6 +4,7 @@ import { after, before, test } from "node:test";
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { pool } from "../../../config/db";
 import { operarContactosRecurrencia } from "./recurrencia.contactos";
+import { cambiarPreferenciaD30, leerPreferenciaD30 } from "./recurrencia.preferencias";
 import { reclamarRecurrenciaPet, procesarRecurrenciaPet, recuperarRecurrenciaPet,
   type ReclamoRecurrenciaPet, type EvolutionRecurrenciaSimulada } from "./recurrencia.processing";
 
@@ -49,6 +50,34 @@ async function claim(f:Fixture, clock=baseClock) {
   const owner=await reclamarRecurrenciaPet(f.localId,f.turnoId,frontendUrl,pool,clock);
   assert.ok(owner); return owner;
 }
+async function checkbox(f: Fixture, habilitada: boolean) {
+  const actual = await leerPreferenciaD30(pool, f.localId, f.clienteId);
+  return cambiarPreferenciaD30(f.localId, f.clienteId, 17, { habilitada, revision: actual.revision,
+    telefono: phone, operacionId: randomUUID() });
+}
+test('preferencia operativa: envio D30 deduplicado; baja/reactivacion no reinician un ciclo sent', async () => {
+  const f = await fixture(false);
+  await checkbox(f, true);
+  const owner = await claim(f);
+  const transport = fake();
+  await process(owner, transport.provider);
+  assert.equal(transport.sends.length, 1);
+  await checkbox(f, false);
+  await checkbox(f, true);
+  assert.equal(await reclamarRecurrenciaPet(f.localId, f.turnoId, frontendUrl, pool, baseClock), null);
+  assert.equal((await reminder(owner)).estado, 'sent');
+});
+test('baja por checkbox durante preflight impide POST y reactivacion no reinicia skipped', async () => {
+  const f = await fixture(false);
+  await checkbox(f, true);
+  const owner = await claim(f);
+  const transport = fake({ connection: async () => { await checkbox(f, false); return 'open'; } });
+  await process(owner, transport.provider);
+  assert.equal(transport.sends.length, 0);
+  assert.equal((await reminder(owner)).estado, 'skipped');
+  await checkbox(f, true);
+  assert.equal(await reclamarRecurrenciaPet(f.localId, f.turnoId, frontendUrl, pool, baseClock), null);
+});
 async function reminder(owner:ReclamoRecurrenciaPet) {
   return (await rows("SELECT *,DATE_FORMAT(claimed_at,'%Y-%m-%d %H:%i:%s.%f') AS claim_key FROM pet_recordatorios WHERE id=? AND local_id=?",[owner.id,owner.localId]))[0];
 }

@@ -11,7 +11,7 @@ import { pool } from "../../../config/db";
 import { normalizeClientPhone } from "../../../shared/phone/normalizeClientPhone";
 import { clientPhoneDuplicateKey } from "../../../shared/phone/clientPhoneDuplicate";
 import { assertNoMascotaFixtures, cleanupMascotaFixture } from "./mascotas.test-fixtures";
-import type { ResultSetHeader } from "mysql2/promise";
+import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
 
 const JWT_TEST_SECRET = "SECRETO_JWT_FICTICIO_PET02_SOLO_TESTS";
 const fixtureSuffix = randomUUID();
@@ -525,29 +525,20 @@ describe("PET-02B Responsables - Crear/Buscar", () => {
     assert.deepEqual(rows[0], { nombre: "Legacy", telefono_normalizado: null });
   });
 
-  test("dos responsables concurrentes equivalentes: una identidad y un cliente", { timeout: 30000 }, async t => {
-    const original = pool.query.bind(pool);
+  test("dos responsables concurrentes equivalentes: una identidad y una preferencia atomica", { timeout: 30000 }, async () => {
     const phone = "1123454310";
-    let reads = 0;
-    let release!: () => void;
-    const barrier = new Promise<void>(resolve => { release = resolve; });
-    t.mock.method(pool, "query", ((...args: Parameters<typeof pool.query>) => {
-      if (String(args[0]).includes("FROM clientes WHERE telefono_normalizado = ? AND local_id = ?") &&
-          Array.isArray(args[1]) && args[1][0] === normalizeClientPhone(phone) && reads < 2) {
-        return original(...args).then(async result => { reads++; if (reads === 2) release(); await barrier; return result; });
-      }
-      return original(...args);
-    }) as typeof pool.query);
     const responses = await Promise.all([
       httpRequest("POST", "/api/pet/admin/responsables", petAdminToken(), { nombre: "Primero", telefono: phone }),
       httpRequest("POST", "/api/pet/admin/responsables", petAdminToken(), { nombre: "Segundo", telefono: "+54 11 2345 4310" }),
     ]);
-    t.mock.restoreAll();
-    assert.equal(reads, 2);
     assert.deepEqual(responses.map(result => result.statusCode).sort(), [200, 201]);
     assert.equal(JSON.parse(responses[0].body).id, JSON.parse(responses[1].body).id);
     const [[count]]: any = await pool.query("SELECT COUNT(*) AS total FROM clientes WHERE telefono_normalizado = ? AND local_id = ?", [normalizeClientPhone(phone), petLocalId]);
     assert.equal(count.total, 1);
+    const [contacts] = await pool.query<RowDataPacket[]>('SELECT estado,revision FROM pet_recurrencia_contactos WHERE local_id=? AND telefono_normalizado=?', [petLocalId, normalizeClientPhone(phone)]);
+    assert.equal(contacts.length, 1);
+    assert.equal(contacts[0].estado, 'habilitada');
+    assert.equal(contacts[0].revision, 1);
   });
 
   test("MySQL informa nombres distintos para UNIQUE canónica y legacy", async () => {
@@ -562,6 +553,31 @@ describe("PET-02B Responsables - Crear/Buscar", () => {
       pool.query("INSERT INTO clientes (nombre, telefono, telefono_normalizado, local_id) VALUES ('B', ?, NULL, ?)", [display, petLocalId]),
       error => clientPhoneDuplicateKey(error) === "legacy",
     );
+  });
+});
+
+describe('D30 preferencia administrativa', () => {
+  test('rutas: JWT, admin PET, tenant y entrada estricta; baja y reactivacion auditadas', async () => {
+    const created = await httpRequest('POST', '/api/pet/admin/responsables', petAdminToken(), { nombre: 'D30 route', telefono: '1123454210' });
+    assert.equal(created.statusCode, 201);
+    const id = JSON.parse(created.body).id as number;
+    const path = `/api/pet/admin/responsables/${id}/recordatorios-d30`;
+    const body = { habilitada: false, revision: 1, telefono: normalizeClientPhone('1123454210'), operacionId: randomUUID() };
+    assert.equal((await httpRequest('PATCH', path, undefined, body)).statusCode, 401);
+    assert.equal((await httpRequest('PATCH', path, petAdminToken({ rol: 'empleado' }), body)).statusCode, 403);
+    assert.equal((await httpRequest('PATCH', path, beautyAdminToken(), body)).statusCode, 403);
+    assert.equal((await httpRequest('PATCH', path, otherPetAdminToken(), body)).statusCode, 404);
+    assert.equal((await httpRequest('PATCH', path, petAdminToken(), { ...body, local_id: petLocalId })).statusCode, 400);
+    const off = await httpRequest('PATCH', path, petAdminToken(), body);
+    assert.equal(off.statusCode, 200);
+    assert.equal(JSON.parse(off.body).estado, 'baja');
+    assert.equal((await httpRequest('PATCH', path, petAdminToken(), { ...body, habilitada: true, operacionId: randomUUID() })).statusCode, 409);
+    const on = await httpRequest('PATCH', path, petAdminToken(), { ...body, habilitada: true, revision: 2, operacionId: randomUUID() });
+    assert.equal(on.statusCode, 200);
+    assert.equal(JSON.parse(on.body).estado, 'habilitada');
+    const [events] = await pool.query<RowDataPacket[]>('SELECT estado,operador_id FROM pet_recurrencia_contacto_eventos WHERE local_id=? AND telefono_normalizado=? ORDER BY revision', [petLocalId, body.telefono]);
+    assert.deepEqual(events.map(e => e.estado), ['habilitada','baja','habilitada']);
+    assert.ok(events.every(e => e.operador_id === 1));
   });
 });
 

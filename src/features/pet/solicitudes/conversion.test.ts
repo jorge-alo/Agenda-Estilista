@@ -8,6 +8,8 @@ import jwt from "jsonwebtoken";
 import { pool } from "../../../config/db";
 import { normalizeClientPhone } from "../../../shared/phone/normalizeClientPhone";
 import petRouter from "../pet.routes";
+import type { RowDataPacket } from 'mysql2/promise';
+import { leerPreferenciaD30 } from '../recordatorios/recurrencia.preferencias';
 
 const prefix = `pet10c1-${randomUUID()}`;
 let nextPhone = 2000;
@@ -103,7 +105,7 @@ test("seguridad: auth, rol, vertical, tenant e ID estricto", async () => {
   assert.deepEqual(await cantidades(locales[0]), { clientes: 0, mascotas: 0, vinculos: 0 });
 });
 
-test("NUEVA: body vacío usa snapshot, crea ficha sin habilitar y conserva historia", async () => {
+test("NUEVA: body vacío usa snapshot, deja online=false y habilita D30 sin inventar consentimiento", async () => {
   const id = await solicitud();
   const antes = await estado(id);
   const result = await request("POST", convertir(id), {}, token());
@@ -113,6 +115,10 @@ test("NUEVA: body vacío usa snapshot, crea ficha sin habilitar y conserva histo
   assert.equal(data.solicitudId, id);
   assert.equal(data.estado, "CONVERTIDA");
   assert.equal(data.cliente.reutilizado, false);
+  assert.equal((await leerPreferenciaD30(pool, locales[0], data.cliente.id)).estado, 'habilitada');
+  const [history] = await pool.query<RowDataPacket[]>('SELECT operador_id,verificada_at,referencia_verificacion FROM pet_recurrencia_contacto_eventos WHERE local_id=? AND cliente_id=?', [locales[0], data.cliente.id]);
+  assert.equal(history.length, 1); assert.equal(history[0].operador_id, 1);
+  assert.equal(history[0].verificada_at, null); assert.equal(history[0].referencia_verificacion, null);
   assert.deepEqual(await cantidades(locales[0]), { clientes: 1, mascotas: 1, vinculos: 1 });
   const [clients]: any = await pool.query("SELECT nombre, telefono FROM clientes WHERE id = ? AND local_id = ?", [data.cliente.id, locales[0]]);
   assert.deepEqual(clients[0], { nombre: antes.responsable_nombre, telefono: antes.responsable_telefono });
@@ -141,11 +147,12 @@ test("NUEVA: body vacío usa snapshot, crea ficha sin habilitar y conserva histo
 test("CONTACTADA: overrides parciales y null solo en opcionales de mascota", async () => {
   const id = await solicitud(locales[0], "CONTACTADA");
   const result = await request("POST", convertir(id), {
-    responsable: { nombre: "  Corregido  ", telefono: " 011 15 2345-6790 " },
+    responsable: { nombre: "  Corregido  ", telefono: " 011 15 2345-6790 ", recordatoriosD30: false },
     mascota: { nombre: " Nuevo nombre ", raza: null, fechaNacimiento: null, tamano: null, sexo: null, tipoPelo: " Rizado ", observaciones: " Revisar el pelo " },
   }, token());
   assert.equal(result.status, 201);
   const data = result.data as { cliente: { id: number }; mascota: { id: number } };
+  assert.equal((await leerPreferenciaD30(pool, locales[0], data.cliente.id)).estado, 'baja');
   const [[client]]: any = await pool.query("SELECT nombre, telefono FROM clientes WHERE id = ?", [data.cliente.id]);
   assert.deepEqual(client, { nombre: "Corregido", telefono: "011 15 2345-6790" });
   const [[pet]]: any = await pool.query("SELECT nombre, raza, fecha_nacimiento, tamano, sexo, tipo_pelo, observaciones FROM mascotas WHERE id = ?", [data.mascota.id]);

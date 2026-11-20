@@ -5,6 +5,7 @@ import { SolicitudSnapshot, validarConversion } from "./conversion.types";
 import { normalizeClientPhone } from "../../../shared/phone/normalizeClientPhone";
 import { ClientPhoneConflictError, clientPhoneDuplicateKey } from "../../../shared/phone/clientPhoneDuplicate";
 import { requirePetPublicBookingEnabled, type PetPublicBookingLocal } from "../shared/publicBookingAccess";
+import { inicializarPreferenciaD30 } from '../recordatorios/recurrencia.preferencias';
 
 interface SolicitudRow extends RowDataPacket {
   id: number;
@@ -132,7 +133,7 @@ interface SolicitudConversionRow extends RowDataPacket, SolicitudSnapshot {
 
 interface ClienteIdRow extends RowDataPacket { id: number }
 
-export async function convertir(localId: number, id: number, body: unknown) {
+export async function convertir(localId: number, id: number, body: unknown, operadorId: number) {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
@@ -186,6 +187,7 @@ export async function convertir(localId: number, id: number, body: unknown) {
       }
     }
 
+    if (!reutilizado) await inicializarPreferenciaD30(connection, localId, clienteId, canonical, ficha.responsable.recordatoriosD30, operadorId);
     const [mascota] = await connection.query<ResultSetHeader>(
       `INSERT INTO mascotas
        (local_id, nombre, raza, fecha_nacimiento, sexo, tamano, tipo_pelo, observaciones,

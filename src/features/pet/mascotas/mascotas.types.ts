@@ -81,6 +81,7 @@ export interface AsociarResponsablePayload {
 export interface CrearResponsablePayload {
   nombre: string;
   telefono: string;
+  recordatoriosD30?: boolean;
 }
 
 export function validarCrearMascota(payload: unknown): { ok: boolean; errores: string[]; data?: CrearMascotaPayload } {
@@ -292,6 +293,7 @@ export function validarCrearResponsable(payload: unknown): { ok: boolean; errore
     errores.push("telefono no puede exceder 50 caracteres");
   }
 
+  if (p.recordatoriosD30 !== undefined && typeof p.recordatoriosD30 !== 'boolean') errores.push('recordatoriosD30 debe ser boolean');
   if (errores.length > 0) {
     return { ok: false, errores };
   }
@@ -302,6 +304,7 @@ export function validarCrearResponsable(payload: unknown): { ok: boolean; errore
     data: {
       nombre: (nombre as string).trim(),
       telefono: (telefono as string).trim(),
+      recordatoriosD30: p.recordatoriosD30 === undefined ? true : p.recordatoriosD30 as boolean,
     },
   };
 }

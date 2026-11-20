@@ -3,6 +3,7 @@ import { authMiddleware } from "../../middlewares/auth.middleware";
 import { requirePetBusiness } from "../../middlewares/requirePetBusiness";
 import serviciosRouter from "./servicios/servicios.routes";
 import mascotasRouter from "./mascotas/mascotas.routes";
+import preferenciasD30Router from "./recordatorios/recurrencia.preferencias.routes";
 import extrasRouter from "./extras/extras.routes";
 import horariosRouter from "./horarios/horarios.routes";
 import bloqueosRouter from "./bloqueos/bloqueos.routes";
@@ -21,6 +22,7 @@ petRouter.use(requirePetBusiness);
 
 petRouter.use(serviciosRouter);
 petRouter.use(mascotasRouter);
+petRouter.use(preferenciasD30Router);
 petRouter.use(extrasRouter);
 petRouter.use(horariosRouter);
 petRouter.use(bloqueosRouter);

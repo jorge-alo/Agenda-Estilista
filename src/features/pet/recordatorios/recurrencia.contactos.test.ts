@@ -39,7 +39,7 @@ function modelo() {
       draft.set(key, { estado: sql.includes("'autorizada'") ? "autorizada" : "baja",
         cliente_id_autorizado: sql.includes("'autorizada'") ? Number(params[2]) : null });
     } else if (sql.startsWith("UPDATE")) {
-      const key = `${params[1]}:${params[2]}`;
+      const key = `${params[2]}:${params[3]}`;
       assert.equal(draft.get(key)?.estado, "autorizada");
       draft.set(key, { ...draft.get(key)!, estado: "baja" });
     } else assert.fail("unexpected SQL");

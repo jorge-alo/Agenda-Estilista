@@ -106,25 +106,6 @@ async function diagnosticarLocks() {
   return rows;
 }
 
-async function transaccionDe(thread: number): Promise<string> {
-  const [rows] = await pool.query<(RowDataPacket & { trx_id: string })[]>(
-    "SELECT trx_id FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id = ?", [thread]);
-  assert.equal(rows.length, 1, `transacción activa de la conversión en thread ${thread}`);
-  return String(rows[0].trx_id);
-}
-
-async function esperarUniqueBloqueadaPor(trxId: string) {
-  const deadline = Date.now() + 15000;
-  while (Date.now() < deadline) {
-    const waits = await diagnosticarLocks();
-    const espera = waits.find(row => row.tabla === "clientes" && row.indice === "unique_cliente_local"
-      && String(row.transaccion_bloqueador) === trxId && String(row.transaccion_solicitante) !== trxId);
-    if (espera) return espera;
-    await new Promise<void>(done => setImmediate(done));
-  }
-  throw new Error(`No se observó UNIQUE clientes bloqueada por la transacción ${trxId}`);
-}
-
 async function sinEspera(thread: number): Promise<void> {
   const [rows] = await pool.query<(RowDataPacket & { total: number })[]>(
     `SELECT COUNT(*) AS total FROM performance_schema.data_lock_waits w
@@ -448,60 +429,45 @@ test("tenants distintos con mismo teléfono: B termina mientras A aún retiene s
   await integridad([idB], localB, phone, 1);
 });
 
-test("ruta real de responsables PET: espera UNIQUE y reutiliza el cliente ganador", { timeout: 70000 }, async t => {
+test("ruta real de responsables PET: espera local X y reutiliza cliente y preferencia ganadores", { timeout: 70000 }, async t => {
   const tenant = await local();
   const phone = testPhone();
   const id = await solicitud(tenant, phone, "Mascota A");
   const hold = retenerConversion(t, tenant, "cliente");
-  const original = pool.query.bind(pool);
-  const insertAttempt = barrier<void>();
-  const legacyPhases: string[] = [];
-  t.mock.method(pool, "query", ((...args: Parameters<typeof pool.query>) => {
-    const sql = String(args[0]);
-    const isLookup = sql.includes("FROM clientes WHERE telefono_normalizado = ? AND local_id = ?");
-    const isInsert = sql.includes("INSERT INTO clientes (nombre, telefono, telefono_normalizado, local_id) VALUES (?, ?, ?, ?)");
-    if (isLookup) legacyPhases.push("legacy: SELECT cliente");
-    if (isInsert) { legacyPhases.push("legacy: INSERT cliente"); insertAttempt.resolve(); }
-    const query = original(...args);
-    if (isLookup || isInsert) {
-      void query.then(() => legacyPhases.push(isLookup ? "legacy: SELECT completo" : "legacy: INSERT completo"),
-        (err: { code?: string }) => legacyPhases.push(`legacy: INSERT error ${err.code ?? "desconocido"}`));
-    }
-    return query;
-  }) as typeof pool.query);
   const first = convertir(tenant, id, { responsable: { nombre: "Nombre ganador" } });
   let legacy: Promise<ApiResult> | undefined;
   let problema: unknown;
   let waits: Awaited<ReturnType<typeof diagnosticarLocks>> = [];
-  let aTrx = "";
   let results: PromiseSettledResult<ApiResult>[] = [];
   try {
     await watchdog(hold.locked, "conversión no insertó cliente");
-    aTrx = await transaccionDe(hold.firstThread());
     legacy = http("POST", "/responsables", tenant, { nombre: "Nombre legacy", telefono: phone });
-    await watchdog(insertAttempt.promise, "legacy no intentó INSERT real");
-    try { await esperarUniqueBloqueadaPor(aTrx); waits = await diagnosticarLocks(); }
-    catch (error) { waits = await diagnosticarLocks(); throw error; }
+    const secondThread = await watchdog(hold.secondAttempt, 'responsables no intento local X');
+    await esperarLock(secondThread, hold.firstThread(), 'locales');
+    assert.equal(hold.secondAcquired(), false);
+    waits = await diagnosticarLocks();
   } catch (error) { problema = error; }
   finally {
     hold.release();
     // Aun con watchdog fallido, esperar a AMBAS rutas antes de que el hook after borre filas.
     results = await Promise.allSettled([first, ...(legacy ? [legacy] : [])]);
   }
-  if (problema) throw new Error(`${String(problema)}; A=${JSON.stringify(hold.phases())}; legacy=${JSON.stringify(legacyPhases)}; waits=${JSON.stringify(waits)}; HTTP=${JSON.stringify(results)}`);
+  if (problema) throw new Error(`${String(problema)}; A=${JSON.stringify(hold.phases())}; waits=${JSON.stringify(waits)}`);
   assert.equal(results.length, 2);
   if (results[0].status !== "fulfilled" || results[1].status !== "fulfilled") {
     throw new Error(`Requests sin respuesta: ${JSON.stringify(results)}`);
   }
   const converted = results[0].value;
   const legacyResult = results[1].value;
-  t.diagnostic(JSON.stringify({ fasesConversion: hold.phases(), fasesLegacy: legacyPhases, aTrx, waits, http: [converted.status, legacyResult.status] }));
+  t.diagnostic(JSON.stringify({ fasesConversion: hold.phases(), waits, http: [converted.status, legacyResult.status] }));
   assert.equal(converted.status, 201);
-  assert.equal(legacyResult.status, 200, "responsables PET relee al ganador tras duplicado");
+  assert.equal(legacyResult.status, 200, "responsables PET relee al ganador tras lock local");
   assert.equal(legacyResult.data.isNew, false);
   assert.equal(legacyResult.data.id, (converted.data as Converted).cliente.id);
   await integridad([id], tenant, phone, 1);
   const [client] = await pool.query<(RowDataPacket & { nombre: string })[]>(
     "SELECT nombre FROM clientes WHERE local_id = ? AND telefono = ?", [tenant, phone]);
   assert.equal(client[0].nombre, "Nombre ganador");
+  const [contacts] = await pool.query<RowDataPacket[]>('SELECT estado,revision FROM pet_recurrencia_contactos WHERE local_id=?', [tenant]);
+  assert.deepEqual(contacts.map(c => [c.estado, c.revision]), [['habilitada', 1]]);
 });

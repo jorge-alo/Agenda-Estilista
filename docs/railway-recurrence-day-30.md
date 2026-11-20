@@ -7,6 +7,17 @@ esta sesión. La aplicación del SQL no activa el scheduler ni autoriza contacto
 
 ## 0. Estado reportado del esquema y del runtime
 
+**Actualizacion local 2026-11-20:** existe una migracion posterior
+`20261120_001_pet_recurrencia_operativa.sql`, aplicada y probada solo en Docker. Agrega
+`habilitada`, revision e historial; reemplaza el trigger terminal por reactivacion operativa
+condicionada e incorpora responsables PET actuales sin fila previa. No inventa consentimiento.
+**NO aplicada en Railway.** Esta guia conserva abajo la evidencia historica del esquema
+20261119. El nuevo backend de preferencias requiere la migracion posterior antes de usarse.
+Una futura aplicacion requiere revisar SQL exacto, estado real/backup/permisos de triggers,
+detener writers y mantener D30 apagado; el DDL no es transaccional. No usar el runner local
+contra Railway, no repetir el DDL original, no borrar historial para rollback ni activar
+variables/envios como parte de una migracion. Aprobacion productiva siempre separada.
+
 Resultado comunicado por el operador:
 
 - MySQL Community Server **9.7.4**, base **`railway`**.

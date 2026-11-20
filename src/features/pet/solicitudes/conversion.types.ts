@@ -11,7 +11,7 @@ export interface SolicitudSnapshot {
 }
 
 export interface FichaConversion {
-  responsable: { nombre: string; telefono: string };
+  responsable: { nombre: string; telefono: string; recordatoriosD30: boolean };
   mascota: {
     nombre: string;
     raza: string | null;
@@ -44,7 +44,8 @@ function seleccionar(data: Record<string, unknown>, key: string, anterior: strin
 
 export function validarConversion(body: unknown, snapshot: SolicitudSnapshot): FichaConversion {
   const root = objeto(body, ["responsable", "mascota"]);
-  const responsable = "responsable" in root ? objeto(root.responsable, ["nombre", "telefono"]) : {};
+  const responsable = "responsable" in root ? objeto(root.responsable, ["nombre", "telefono", "recordatoriosD30"]) : {};
+  if (responsable.recordatoriosD30 !== undefined && typeof responsable.recordatoriosD30 !== 'boolean') throw new SolicitudError(400, 'PET_SOLICITUD_INVALID_BODY');
   const mascota = "mascota" in root ? objeto(root.mascota, ["nombre", "raza", "fechaNacimiento", "tamano", "sexo", "tipoPelo", "observaciones"]) : {};
 
   const rawFecha = Object.prototype.hasOwnProperty.call(mascota, "fechaNacimiento") ? mascota.fechaNacimiento : snapshot.mascota_fecha_nacimiento;
@@ -52,6 +53,7 @@ export function validarConversion(body: unknown, snapshot: SolicitudSnapshot): F
     responsable: {
       nombre: seleccionar(responsable, "nombre", snapshot.responsable_nombre, 255, true)!,
       telefono: seleccionar(responsable, "telefono", snapshot.responsable_telefono, 50, true)!,
+      recordatoriosD30: responsable.recordatoriosD30 === undefined ? true : responsable.recordatoriosD30 as boolean,
     },
     mascota: {
       nombre: seleccionar(mascota, "nombre", snapshot.mascota_nombre, 255, true)!,

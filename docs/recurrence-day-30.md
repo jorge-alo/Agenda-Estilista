@@ -4,6 +4,14 @@ Guía autocontenida del backend. Código de etapas 1–4 y E2E validado en Docke
 de contactos se aplicó manualmente también en Railway, pero el backend de `0f442` no está
 publicado según confirmación del operador; no hay cargas reales ni activación mensual.
 
+Actualizacion 2026-11-20: simplificacion operativa implementada localmente. Requiere
+`20261120_001_pet_recurrencia_operativa.sql`, aplicada SOLO en Docker. Checkbox reversible
+por telefono/local, habilitado por defecto para nuevos responsables (alta y conversion),
+historial con fecha/operador y revision/CAS. La migracion incorpora responsables PET
+vinculados sin fila previa, origen real `incorporacion_inicial`, sin inventar consentimiento
+ni sobrescribir bajas. Railway no fue modificado. Contrato actualizado detallado en
+`../../docs/pet-recurrencia-contactos.md` y API §43.
+
 ## Contrato funcional
 
 - D0 es la **fecha agendada** del último turno `completado` por mascota/local,
@@ -11,7 +19,8 @@ publicado según confirmación del operador; no hay cargas reales ni activación
 - Solo D0 + 30 días calendario = **hoy** en `America/Argentina/Buenos_Aires`.
   Ventana `[10:00,12:00)` ART; nunca backfill D31/D40/D60.
 - Destinatario: responsable del último completado, aún vinculado, con canonical
-  válido y autorización verificada. No hay fallback a otro responsable.
+  valido y preferencia persistida `habilitada` operativa o `autorizada` con evidencia.
+  Sin fila o con `baja`, no envia. No hay fallback a otro responsable.
 - Local y mascota deben permitir la reserva pública. Una próxima reserva activa
   o pendiente_pago, futura o en curso, excluye aunque sea para después de D35.
 - D35 inclusive es el plazo comercial para efectuar una reserva, cuya atención
@@ -60,7 +69,10 @@ La nueva migración es `migrations/20261119_001_pet_recurrencia_contactos.sql`:
 - Tabla por `(local_id,telefono_normalizado)`, CHECKs y FK CASCADE al local.
 - Snapshot histórico del ID de responsable, sin FK al cliente: una baja sobrevive a su
   eliminación/recreación y una autorización no se transfiere al nuevo titular/número.
-- Trigger impide cambiar identidad o reactivar una baja. No hay reactivación en el piloto.
+- El trigger original/Railway impide cambiar identidad o reactivar una baja.
+  La migracion posterior conserva identidad y permite baja→habilitada solo con origen
+  ficha, operador y operacion nuevos; baja→autorizada sigue prohibida. Historial append-only
+  y versionado automatico por triggers. Reactivar no reinicia ciclos terminales.
 
 El archivo utiliza `DELIMITER` para definir el trigger: requiere cliente MySQL compatible
 o un runner que separe correctamente las sentencias. No se ejecuta automáticamente al arrancar.
@@ -78,10 +90,10 @@ Una baja/reserva posterior a la autorización puede coincidir con el despacho au
 Ante duda se evita repetir, aceptando posibles omisiones. La base es la fuente de verdad;
 los logs de transición no sustituyen la confirmación de commit/estado persistido.
 
-## Autorizaciones y bajas: operación local
+## Autorizaciones verificadas por importador: operación local
 
 No se infiere autorización de una relación comercial o de haber enviado mensajes antes.
-La cohorte requiere evidencia verificable para esta finalidad; guardar referencias,
+El importador de autorizaciones verificadas requiere evidencia para esta finalidad; guardar referencias,
 no conversaciones. La aplicación valida estructura, identidad y fecha, no el contenido
 de la evidencia. Ausencia de permiso o baja = no enviar.
 
