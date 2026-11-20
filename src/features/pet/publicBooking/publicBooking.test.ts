@@ -178,8 +178,8 @@ test("PET-12C autoriza mascota propia y devuelve servicios/extras activos con or
   assert.equal(result.noStore, true);
   assert.deepEqual(json(result), {
     servicios: [
-      { id: servicioA, nombre: "Alfa corte", duracionMinutos: 90 },
-      { id: servicioB, nombre: "Zeta baño", duracionMinutos: 50 },
+      { id: servicioA, nombre: "Alfa corte", descripcion: null, duracionMinutos: 90 },
+      { id: servicioB, nombre: "Zeta baño", descripcion: null, duracionMinutos: 50 },
     ],
     extras: [
       { id: extraA, nombre: "Alfa perfume", duracionExtraMinutos: 5 },
@@ -200,6 +200,27 @@ test("PET-12C lista vacía es válida y no convierte a la mascota en no autoriza
   assert.deepEqual(json(result), { servicios: [], extras: [] });
 });
 
+test("descripción pública pertenece al servicio del tenant y no expone servicios ajenos o no configurados", async () => {
+  const local = await createLocal();
+  const foreign = await createLocal();
+  const client = await createClient(local.id);
+  const pet = await createPet(local.id, "Descripción");
+  await link(local.id, pet, client);
+  const session = await createSession(local.id, client);
+  const service = await createServicio(local.id, "Baño", 30);
+  const foreignService = await createServicio(foreign.id, "Baño", 30);
+  const unconfigured = await createServicio(local.id, "No permitido", 30);
+  await q("UPDATE servicios SET descripcion = ? WHERE id = ? AND local_id = ?", ["Incluye baño y secado.\nCepillado suave.", service, local.id]);
+  await q("UPDATE servicios SET descripcion = ? WHERE id = ? AND local_id = ?", ["AJENO_NO_PUBLICAR", foreignService, foreign.id]);
+  await q("UPDATE servicios SET descripcion = ? WHERE id = ? AND local_id = ?", ["NO_CONFIGURADO", unconfigured, local.id]);
+  await configServicio(local.id, pet, service, 45);
+  const result = await opciones(local, session.secret, pet);
+  assert.equal(result.status, 200);
+  assert.deepEqual(json(result).servicios, [{ id: service, nombre: "Baño", descripcion: "Incluye baño y secado.\nCepillado suave.", duracionMinutos: 45 }]);
+  assert.ok(!result.body.includes("AJENO_NO_PUBLICAR") && !result.body.includes("NO_CONFIGURADO"));
+  assert.equal((await opciones(foreign, session.secret, pet)).status, 401);
+});
+
 test("PET-12C usa duracion_minutos y no la duracion genérica del catálogo", async () => {
   const local = await createLocal();
   const client = await createClient(local.id);
@@ -209,7 +230,7 @@ test("PET-12C usa duracion_minutos y no la duracion genérica del catálogo", as
   const servicio = await createServicio(local.id, "Baño", 30);
   await configServicio(local.id, pet, servicio, 75);
   const result = await opciones(local, session.secret, pet);
-  assert.deepEqual(json(result).servicios, [{ id: servicio, nombre: "Baño", duracionMinutos: 75 }]);
+  assert.deepEqual(json(result).servicios, [{ id: servicio, nombre: "Baño", descripcion: null, duracionMinutos: 75 }]);
 });
 
 test("PET-12C excluye servicios/extras no configurados y de catálogo inactivo", async () => {
@@ -231,7 +252,7 @@ test("PET-12C excluye servicios/extras no configurados y de catálogo inactivo",
 
   const result = await opciones(local, session.secret, pet);
   assert.deepEqual(json(result), {
-    servicios: [{ id: activo, nombre: "Activo", duracionMinutos: 30 }],
+    servicios: [{ id: activo, nombre: "Activo", descripcion: null, duracionMinutos: 30 }],
     extras: [{ id: extraActivo, nombre: "Extra activo", duracionExtraMinutos: 10 }],
   });
 });
@@ -402,7 +423,7 @@ test("PET-12C aislamiento multi-tenant: catálogos de dos locales no se mezclan"
   await configServicio(localB.id, petB, servicioB, 30);
 
   const result = await opciones(localA, sessionA.secret, petA);
-  assert.deepEqual(json(result).servicios, [{ id: servicioA, nombre: "Servicio A", duracionMinutos: 30 }]);
+  assert.deepEqual(json(result).servicios, [{ id: servicioA, nombre: "Servicio A", descripcion: null, duracionMinutos: 30 }]);
 });
 
 test("PET-12C guard de integridad de duración falla en vez de publicar corrupción", () => {

@@ -643,5 +643,5 @@ test("PET-12D regresión: el contrato PET-12C opciones-reserva sigue intacto", a
     headers: { Authorization: `Bearer ${session.secret}` },
   });
   assert.equal(result.status, 200);
-  assert.deepEqual(json(result), { servicios: [{ id: servicio, nombre: "Baño", duracionMinutos: 45 }], extras: [] });
+  assert.deepEqual(json(result), { servicios: [{ id: servicio, nombre: "Baño", descripcion: null, duracionMinutos: 45 }], extras: [] });
 });

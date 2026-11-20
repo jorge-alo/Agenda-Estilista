@@ -21,7 +21,7 @@ test("M.3G catálogo/configuración → disponibilidad admin/pública → reserv
   const [catalogRow] = await q<RowDataPacket[]>("SELECT duracion, precio FROM servicios WHERE id=? AND local_id=?", [service.id, f.localId]);
   assert.deepEqual({ ...catalogRow }, { duracion: null, precio: null });
   const options = await obtenerOpcionesReserva(f.localId, f.clienteId, f.mascotaId);
-  assert.deepEqual(options.servicios.find(s => s.id === service.id), { id: service.id, nombre: service.nombre, duracionMinutos: 60 });
+  assert.deepEqual(options.servicios.find(s => s.id === service.id), { id: service.id, nombre: service.nombre, descripcion: null, duracionMinutos: 60 });
   assert.equal(options.extras.find(e => e.id === e1.id)?.duracionExtraMinutos, 30);
   assert.equal(options.extras.find(e => e.id === e2.id)?.duracionExtraMinutos, 15);
   for (const result of [await obtenerDisponibilidad(f.localId, selection), await obtenerDisponibilidadPublica(f.localId, f.clienteId, selection)]) {

@@ -4,8 +4,8 @@ import { PetServicioError, type ServicioCatalogo, type EditarServicioPayload } f
 
 type ServicioCatalogoRow = RowDataPacket & Omit<ServicioCatalogo, "activo"> & { activo: 0 | 1 | null };
 
-function dtoCatalogo(row: Pick<ServicioCatalogoRow, "id" | "nombre" | "activo">): ServicioCatalogo {
-  return { id: row.id, nombre: row.nombre, activo: row.activo ?? 0 };
+function dtoCatalogo(row: Pick<ServicioCatalogoRow, "id" | "nombre" | "descripcion" | "activo">): ServicioCatalogo {
+  return { id: row.id, nombre: row.nombre, descripcion: row.descripcion, activo: row.activo ?? 0 };
 }
 
 async function validarMascota(localId: number, mascotaId: number) {
@@ -29,17 +29,17 @@ async function validarPadres(connection: PoolConnection, localId: number, mascot
 
 export async function listarCatalogo(localId: number): Promise<ServicioCatalogo[]> {
   const [rows] = await pool.query<ServicioCatalogoRow[]>(
-    "SELECT id, nombre, activo FROM servicios WHERE local_id = ? ORDER BY nombre ASC, id ASC", [localId]
+    "SELECT id, nombre, descripcion, activo FROM servicios WHERE local_id = ? ORDER BY nombre ASC, id ASC", [localId]
   );
   return rows.map(dtoCatalogo);
 }
 
-export async function crearServicio(localId: number, nombre: string): Promise<ServicioCatalogo> {
+export async function crearServicio(localId: number, nombre: string, descripcion: string | null = null): Promise<ServicioCatalogo> {
   const [result] = await pool.query<ResultSetHeader>(
-    "INSERT INTO servicios (nombre, duracion, precio, local_id, activo) VALUES (?, NULL, NULL, ?, 1)",
-    [nombre, localId]
+    "INSERT INTO servicios (nombre, descripcion, duracion, precio, local_id, activo) VALUES (?, ?, NULL, NULL, ?, 1)",
+    [nombre, descripcion, localId]
   );
-  return { id: result.insertId, nombre, activo: 1 };
+  return { id: result.insertId, nombre, descripcion, activo: 1 };
 }
 
 export async function editarServicio(localId: number, servicioId: number, payload: EditarServicioPayload): Promise<ServicioCatalogo> {
@@ -47,18 +47,19 @@ export async function editarServicio(localId: number, servicioId: number, payloa
   try {
     await connection.beginTransaction();
     const [rows] = await connection.query<ServicioCatalogoRow[]>(
-      "SELECT id, nombre, activo FROM servicios WHERE id = ? AND local_id = ? FOR UPDATE", [servicioId, localId]
+      "SELECT id, nombre, descripcion, activo FROM servicios WHERE id = ? AND local_id = ? FOR UPDATE", [servicioId, localId]
     );
     if (!rows.length) throw new PetServicioError(404, "Servicio no encontrado");
     // Reconstruir solo desde la fila bloqueada; preservar incluso NULL legacy si se omite activo.
     const nombre = payload.nombre ?? rows[0].nombre;
+    const descripcion = payload.descripcion === undefined ? rows[0].descripcion : payload.descripcion;
     const activo = payload.activo === undefined ? rows[0].activo : payload.activo ? 1 : 0;
     await connection.query(
-      "UPDATE servicios SET nombre = ?, activo = ? WHERE id = ? AND local_id = ?",
-      [nombre, activo, servicioId, localId]
+      "UPDATE servicios SET nombre = ?, descripcion = ?, activo = ? WHERE id = ? AND local_id = ?",
+      [nombre, descripcion, activo, servicioId, localId]
     );
     await connection.commit();
-    return dtoCatalogo({ id: servicioId, nombre, activo });
+    return dtoCatalogo({ id: servicioId, nombre, descripcion, activo });
   } catch (error: unknown) {
     await connection.rollback();
     throw error;

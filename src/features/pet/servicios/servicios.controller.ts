@@ -23,7 +23,7 @@ export async function crearServicio(req: AuthRequest, res: Response) {
   try {
     const localId = localDelJwt(req);
     const payload = validarCrearServicio(req.body);
-    return res.status(201).json(await service.crearServicio(localId, payload.nombre));
+    return res.status(201).json(await service.crearServicio(localId, payload.nombre, payload.descripcion));
   } catch (error: unknown) { return responderError(res, error); }
 }
 

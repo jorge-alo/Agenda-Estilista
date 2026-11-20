@@ -35,6 +35,7 @@ export function duracionPublica(value: number, campo: string): number {
 export interface OpcionesReservaServicio {
   id: number;
   nombre: string;
+  descripcion: string | null;
   duracionMinutos: number;
 }
 

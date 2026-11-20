@@ -72,7 +72,7 @@ beforeEach(async t => {
   assert.ok("mock" in t);
   t.mock.property(process, "env", { JWT_SECRET: secret });
   for (const localId of locales) await pool.query("DELETE FROM mascota_servicios WHERE local_id = ?", [localId]);
-  await pool.query("UPDATE servicios SET nombre = 'Baño', activo = 1, duracion = 25, precio = NULL WHERE id = ? AND local_id = ?", [servicio, locales[0]]);
+  await pool.query("UPDATE servicios SET nombre = 'Baño', descripcion = NULL, activo = 1, duracion = 25, precio = NULL WHERE id = ? AND local_id = ?", [servicio, locales[0]]);
   await pool.query("UPDATE mascotas SET activo = 1 WHERE id = ? AND local_id = ?", [mascota, locales[0]]);
 });
 
@@ -141,7 +141,7 @@ test("Catálogo tenant incluye activos/inactivos e ignora local_id de query", as
   const result = await http("GET", `${base}/servicios?local_id=${locales[1]}`);
   assert.equal(result.status, 200);
   const rows = JSON.parse(result.body) as ServicioCatalogo[];
-  for (const row of rows) assert.deepEqual(Object.keys(row).sort(), ["activo", "id", "nombre"]);
+  for (const row of rows) assert.deepEqual(Object.keys(row).sort(), ["activo", "descripcion", "id", "nombre"]);
   assert.deepEqual(rows.map(r => r.id).sort((a, b) => a - b), [servicio, inactivo]);
   assert.equal(rows.find(r => r.id === inactivo)?.activo, 0);
   assert.deepEqual(rows.map(r => r.id), [servicio, inactivo]);
@@ -287,17 +287,60 @@ async function crearCatalogo(nombre: string, localId = locales[0]): Promise<Serv
   assert.equal(result.status, 201, result.body);
   const dto = JSON.parse(result.body) as ServicioCatalogo;
   creados.push({ id: dto.id, localId });
-  assert.deepEqual(Object.keys(dto).sort(), ["activo", "id", "nombre"]);
+  assert.deepEqual(Object.keys(dto).sort(), ["activo", "descripcion", "id", "nombre"]);
   return dto;
 }
 
 async function leerServicio(id = servicio, localId = locales[0]) {
   const [rows] = await pool.query<RowDataPacket[]>(
-    "SELECT id, nombre, activo, duracion, precio, local_id, created_at FROM servicios WHERE id = ? AND local_id = ?", [id, localId]
+    "SELECT id, nombre, descripcion, activo, duracion, precio, local_id, created_at FROM servicios WHERE id = ? AND local_id = ?", [id, localId]
   );
   assert.equal(rows.length, 1);
   return { ...rows[0] };
 }
+
+test("descripción opcional: alta trim, lectura, edición, omisión preservada y limpieza", async () => {
+  const created = await http("POST", catalogo, { nombre: "Descripción", descripcion: "  Baño y secado.\nCepillado.  " });
+  assert.equal(created.status, 201);
+  const dto = JSON.parse(created.body) as ServicioCatalogo;
+  creados.push({ id: dto.id, localId: locales[0] });
+  assert.equal(dto.descripcion, "Baño y secado.\nCepillado.");
+  assert.equal((await leerServicio(dto.id)).descripcion, dto.descripcion);
+  assert.equal((JSON.parse((await http("GET", catalogo)).body) as ServicioCatalogo[]).find(s => s.id === dto.id)?.descripcion, dto.descripcion);
+  const preserved = await http("PATCH", `${catalogo}/${dto.id}`, { nombre: "Nuevo", activo: false });
+  assert.equal(preserved.status, 200);
+  assert.equal(JSON.parse(preserved.body).descripcion, dto.descripcion);
+  for (const descripcion of ["Nueva descripción", " ", "Otra", null]) {
+    const changed = await http("PATCH", `${catalogo}/${dto.id}`, { descripcion });
+    assert.equal(changed.status, 200, changed.body);
+    assert.equal(JSON.parse(changed.body).descripcion, descripcion?.trim() || null);
+    assert.equal((await leerServicio(dto.id)).descripcion, descripcion?.trim() || null);
+  }
+});
+
+test("descripción: NULL/vacía y límite Unicode de 1000 caracteres", async () => {
+  for (const descripcion of [null, "", "  ", "x".repeat(1000), "🐾".repeat(1000)]) {
+    const result = await http("POST", catalogo, { nombre: "Límite", descripcion });
+    assert.equal(result.status, 201, result.body);
+    const dto = JSON.parse(result.body) as ServicioCatalogo;
+    creados.push({ id: dto.id, localId: locales[0] });
+    assert.equal(dto.descripcion, descripcion?.trim() || null);
+    assert.equal((await leerServicio(dto.id)).descripcion, dto.descripcion);
+  }
+  for (const descripcion of [1, false, {}, [], "x".repeat(1001), "🐾".repeat(1001)]) {
+    const before = await leerServicio();
+    error400(await http("POST", catalogo, { nombre: "Inválido", descripcion }));
+    error400(await http("PATCH", `${catalogo}/${servicio}`, { descripcion }));
+    assert.deepEqual(await leerServicio(), before);
+  }
+});
+
+test("descripción: editar un servicio ajeno no modifica su contenido", async () => {
+  const foreign = await leerServicio(otroServicio, locales[1]);
+  const result = await http("PATCH", `${catalogo}/${otroServicio}`, { descripcion: "No modificar" });
+  assert.equal(result.status, 404);
+  assert.deepEqual(await leerServicio(otroServicio, locales[1]), foreign);
+});
 
 function error400(result: { status: number; body: string }, mensaje?: string) {
   assert.equal(result.status, 400, result.body);
@@ -321,7 +364,7 @@ test("M.3B.3 GET ordena nombre ASC e id ASC, incluidos homónimos", async () => 
   assert.equal(result.status, 200);
   const rows = JSON.parse(result.body) as ServicioCatalogo[];
   assert.deepEqual(rows.map(row => row.id), [a.id, a2.id, servicio, inactivo, z.id]);
-  for (const row of rows) assert.deepEqual(Object.keys(row).sort(), ["activo", "id", "nombre"]);
+  for (const row of rows) assert.deepEqual(Object.keys(row).sort(), ["activo", "descripcion", "id", "nombre"]);
 });
 
 test("M.3B.3 activo NULL legacy se proyecta 0 sin normalizar al leer ni editar nombre", async () => {
@@ -331,14 +374,14 @@ test("M.3B.3 activo NULL legacy se proyecta 0 sin normalizar al leer ni editar n
   assert.equal((await leerServicio()).activo, null);
   const result = await http("PATCH", `${catalogo}/${servicio}`, { nombre: "Legacy NULL" });
   assert.equal(result.status, 200);
-  assert.deepEqual(JSON.parse(result.body), { id: servicio, nombre: "Legacy NULL", activo: 0 });
+  assert.deepEqual(JSON.parse(result.body), { id: servicio, nombre: "Legacy NULL", descripcion: null, activo: 0 });
   assert.equal((await leerServicio()).activo, null);
 });
 
 for (const nombre of ["Baño y corte", "  Con trim  ", "A", "A".repeat(100), "🐾".repeat(100)]) {
   test(`M.3B.3 POST válido (${[...nombre].length} caracteres) persiste NULLs, activo y tenant JWT`, async () => {
     const dto = await crearCatalogo(nombre);
-    assert.deepEqual(dto, { id: dto.id, nombre: nombre.trim(), activo: 1 });
+    assert.deepEqual(dto, { id: dto.id, nombre: nombre.trim(), descripcion: null, activo: 1 });
     const row = await leerServicio(dto.id);
     assert.equal(row.nombre, nombre.trim());
     assert.equal(row.duracion, null);
@@ -449,7 +492,7 @@ for (const payload of [
     assert.equal(result.status, 200, result.body);
     const nombre = payload.nombre?.trim() ?? before.nombre;
     const activo = payload.activo === undefined ? before.activo : Number(payload.activo);
-    assert.deepEqual(JSON.parse(result.body), { id: servicio, nombre, activo });
+    assert.deepEqual(JSON.parse(result.body), { id: servicio, nombre, descripcion: before.descripcion, activo });
     assert.deepEqual(await leerServicio(), { ...before, nombre, activo });
   });
 }
@@ -459,7 +502,7 @@ test("M.3B.3 PATCH reactiva y no-op de inactivo; nombre omitido se preserva", as
   for (const activo of [false, true, true, false]) {
     const result = await http("PATCH", `${catalogo}/${inactivo}`, { activo });
     assert.equal(result.status, 200, result.body);
-    assert.deepEqual(JSON.parse(result.body), { id: inactivo, nombre: before.nombre, activo: Number(activo) });
+    assert.deepEqual(JSON.parse(result.body), { id: inactivo, nombre: before.nombre, descripcion: before.descripcion, activo: Number(activo) });
     assert.deepEqual(await leerServicio(inactivo), { ...before, activo: Number(activo) });
   }
 });
@@ -552,7 +595,7 @@ test("M.3B.3 dos PATCH parciales serializan lectura/escritura con lock InnoDB si
     const originalQuery = conn.query.bind(conn);
     t.mock.method(conn, "query", ((...args: Parameters<typeof conn.query>) => {
       const sql: unknown = args[0];
-      if (typeof sql === "string" && sql.includes("SELECT id, nombre, activo FROM servicios WHERE id = ? AND local_id = ? FOR UPDATE")) {
+      if (typeof sql === "string" && sql.includes("FROM servicios WHERE id = ? AND local_id = ? FOR UPDATE")) {
         const result = originalQuery(...args);
         if (!firstSeen) {
           firstSeen = true;
@@ -565,7 +608,7 @@ test("M.3B.3 dos PATCH parciales serializan lectura/escritura con lock InnoDB si
     }) as typeof conn.query);
     return conn;
   });
-  const first = http("PATCH", `${catalogo}/${servicio}`, { nombre: "Nombre concurrente" });
+  const first = http("PATCH", `${catalogo}/${servicio}`, { nombre: "Nombre concurrente", descripcion: "Descripción concurrente" });
   let second: ReturnType<typeof http> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const watchdog = new Promise<never>((_resolve, reject) => {
@@ -597,9 +640,10 @@ test("M.3B.3 dos PATCH parciales serializan lectura/escritura con lock InnoDB si
   assert.ok(second);
   const result = await second;
   assert.equal(result.status, 200, result.body);
-  assert.deepEqual(JSON.parse(result.body), { id: servicio, nombre: "Nombre concurrente", activo: 0 });
+  assert.deepEqual(JSON.parse(result.body), { id: servicio, nombre: "Nombre concurrente", descripcion: "Descripción concurrente", activo: 0 });
   const row = await leerServicio();
   assert.equal(row.nombre, "Nombre concurrente");
+  assert.equal(row.descripcion, "Descripción concurrente");
   assert.equal(row.activo, 0);
   assert.equal(row.duracion, 25);
   assert.equal(row.precio, null);

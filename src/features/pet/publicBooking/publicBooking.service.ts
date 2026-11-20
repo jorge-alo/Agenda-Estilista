@@ -24,6 +24,7 @@ import {
 interface ServicioRow extends RowDataPacket {
   id: number;
   nombre: string;
+  descripcion: string | null;
   duracion_minutos: number;
 }
 
@@ -35,7 +36,7 @@ interface ExtraRow extends RowDataPacket {
 
 async function listarServiciosPublicos(localId: number, mascotaId: number): Promise<OpcionesReservaServicio[]> {
   const [rows] = await pool.query<ServicioRow[]>(
-    `SELECT s.id, s.nombre, ms.duracion_minutos
+    `SELECT s.id, s.nombre, s.descripcion, ms.duracion_minutos
      FROM mascota_servicios ms
      JOIN servicios s ON s.id = ms.servicio_id AND s.local_id = ms.local_id
      WHERE ms.mascota_id = ? AND ms.local_id = ? AND s.activo = 1
@@ -45,6 +46,7 @@ async function listarServiciosPublicos(localId: number, mascotaId: number): Prom
   return rows.map(row => ({
     id: row.id,
     nombre: row.nombre,
+    descripcion: row.descripcion,
     duracionMinutos: duracionPublica(row.duracion_minutos, `mascota_servicios[${row.id}]`),
   }));
 }
