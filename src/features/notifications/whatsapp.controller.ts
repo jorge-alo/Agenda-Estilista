@@ -1,6 +1,7 @@
 // whatsapp.controller.ts
 import { Request, Response } from "express";
 import { evolutionClient } from "./infrastructure/evolution.client";
+import { buildEvolutionInstancePayload } from "./infrastructure/evolution.contract";
 import { logEvolutionFailure } from "./infrastructure/evolution.logging";
 
 interface AuthRequest extends Request {
@@ -8,6 +9,22 @@ interface AuthRequest extends Request {
     userId: number;
     localId: number;
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function existingInstanceStatus(error: unknown, instanceName: string): number | undefined {
+  if (!isRecord(error) || !isRecord(error.response)) return undefined;
+  const { status, data } = error.response;
+  if (status !== 400 && status !== 403) return undefined;
+  if (!isRecord(data) || !isRecord(data.response)) return undefined;
+  const message = data.response.message;
+  const messages: unknown[] = Array.isArray(message) ? message : [message];
+  // Both supported releases use this message. Never infer a duplicate from status alone.
+  return messages.length === 1 && messages[0] === `This name "${instanceName}" is already in use.`
+    ? status : undefined;
 }
 
 export const conectarWhatsApp = async (req: AuthRequest, res: Response) => {
@@ -20,21 +37,13 @@ export const conectarWhatsApp = async (req: AuthRequest, res: Response) => {
   }
 
   try {
-    await evolutionClient.post("/instance/create", {
-      instanceName: String(localId),
-      qrcode: true,
-    });
+    await evolutionClient.post("/instance/create", buildEvolutionInstancePayload(String(localId)));
   } catch (error: unknown) {
     logEvolutionFailure("createInstance", String(localId), error);
 
-    const existingError = error as { response?: { data?: { response?: { message?: unknown } }; status?: number } };
-    const responseMessage = existingError.response?.data?.response?.message;
-    const mensaje = Array.isArray(responseMessage)
-      ? responseMessage[0]
-      : typeof responseMessage === "string" ? responseMessage : undefined;
-    const yaExiste = (typeof mensaje === "string" && mensaje.toLowerCase().includes("already in use")) || existingError.response?.status === 400;
+    const status = existingInstanceStatus(error, String(localId));
 
-    if (!yaExiste) {
+    if (status === undefined) {
       return res.status(500).json({
         error: "La API de WhatsApp no respondió a tiempo. Intentá de nuevo en unos segundos."
       });
@@ -44,7 +53,7 @@ export const conectarWhatsApp = async (req: AuthRequest, res: Response) => {
       provider: "evolution",
       operation: "createInstance",
       instance: /^\d{1,10}$/.test(String(localId)) ? String(localId) : "unknown",
-      status: existingError.response?.status,
+      status,
     });
   }
 
