@@ -122,7 +122,10 @@ beforeEach(t => {
 
 afterEach(async t => {
   if ("mock" in t) t.mock.restoreAll();
-  for (const localId of localIds.splice(0)) await q("DELETE FROM locales WHERE id = ? AND nombre = ?", [localId, prefix]);
+  for (const localId of localIds.splice(0)) {
+    await q("DELETE FROM turnos WHERE local_id = ?", [localId]);
+    await q("DELETE FROM locales WHERE id = ? AND nombre = ?", [localId, prefix]);
+  }
 });
 
 after(async () => {
@@ -136,6 +139,97 @@ after(async () => {
     }
     await pool.end();
   }
+});
+
+async function createBooking(local: LocalFixture, clientId: number, petId: number,
+  fecha: string, hora = "10:00", estado = "activo") {
+  const result = await q<ResultSetHeader>(
+    `INSERT INTO turnos (local_id, cliente_id, mascota_id, fecha, hora, hora_fin,
+      cliente_nombre, cliente_telefono, servicio_nombre_snapshot, duracion_servicio_snapshot, alta_exigencia_snapshot, estado)
+     VALUES (?, ?, ?, ?, ?, ADDTIME(?, '01:00:00'), 'PRIVATE_NAME', 'PRIVATE_PHONE', 'Baño histórico', 60, 0, ?)`,
+    [local.id, clientId, petId, fecha, hora, hora, estado]);
+  return result.insertId;
+}
+
+test("PET /me próximos: cliente+tenant, vínculo vigente, elegibilidad, estados y orden", async () => {
+  const local = await createLocal();
+  const otherLocal = await createLocal();
+  const client = await createClient(local);
+  const otherClient = await createClient(local, "1123452001", "Bea");
+  const foreignClient = await createClient(otherLocal);
+  const session = await createSession(local.id, client);
+  const pet = await createPet(local, "Compartida");
+  const inactive = await createPet(local, "Inactiva", { active: 0 });
+  const offline = await createPet(local, "Offline", { online: 0 });
+  const unlinked = await createPet(local, "Sin vínculo");
+  const foreignPet = await createPet(otherLocal, "Ajena");
+  for (const id of [pet, inactive, offline]) await link(local, id, client);
+  await link(local, pet, otherClient);
+  await link(otherLocal, foreignPet, foreignClient);
+  const dates = await row(`SELECT
+    DATE_FORMAT(DATE_ADD(UTC_DATE(), INTERVAL 2 DAY), '%Y-%m-%d') AS futuro,
+    DATE_FORMAT(DATE_ADD(UTC_DATE(), INTERVAL 3 DAY), '%Y-%m-%d') AS posterior`);
+  const last = await createBooking(local, client, pet, dates.posterior);
+  const later = await createBooking(local, client, pet, dates.futuro, "12:00");
+  const first = await createBooking(local, client, pet, dates.futuro);
+  const tie = await createBooking(local, client, pet, dates.futuro);
+  await createBooking(local, otherClient, pet, dates.futuro);
+  await createBooking(otherLocal, foreignClient, foreignPet, dates.futuro);
+  for (const id of [inactive, offline, unlinked]) await createBooking(local, client, id, dates.futuro);
+  for (const state of ["cancelado", "completado", "pendiente_pago"]) {
+    await createBooking(local, client, pet, dates.futuro, "10:00", state);
+  }
+  await createBooking(local, client, pet, "2000-01-01");
+  const result = await me(local, session.secret);
+  assert.equal(result.status, 200);
+  assert.equal(result.noStore, true);
+  assert.deepEqual(json(result).proximosTurnos, [first, tie, later, last].map(id => ({
+    id, mascota: { id: pet, nombre: "Compartida" }, fecha: id === last ? dates.posterior : dates.futuro,
+    hora: id === later ? "12:00" : "10:00", servicio: "Baño histórico", estado: "activo",
+  })));
+  assert.ok(!result.body.includes("PRIVATE_"));
+  // Query params cannot select another client/local or bypass ownership.
+  const tampered = await call(`/api/pet/public/${local.slug}/session/me?cliente_id=${otherClient}&local_id=${otherLocal.id}`,
+    { headers: { Authorization: `Bearer ${session.secret}` } });
+  assert.deepEqual(json(tampered).proximosTurnos, json(result).proximosTurnos);
+  await q("DELETE FROM mascota_clientes WHERE local_id = ? AND cliente_id = ? AND mascota_id = ?", [local.id, client, pet]);
+  assert.deepEqual(json(await me(local, session.secret)).proximosTurnos, []);
+});
+
+test("PET /me próximos usa el instante DB argentino incluso alrededor de medianoche", async t => {
+  const local = await createLocal();
+  const client = await createClient(local);
+  const session = await createSession(local.id, client);
+  const pet = await createPet(local, "Rocky");
+  await link(local, pet, client);
+  const previous = await createBooking(local, client, pet, "2030-01-01", "22:29");
+  const upcoming = await createBooking(local, client, pet, "2030-01-01", "22:31");
+  const tomorrow = await createBooking(local, client, pet, "2030-01-02", "00:01");
+  const original = pool.query.bind(pool);
+  t.mock.method(pool, "query", ((sql: string, values?: unknown[]) => original(
+    sql.includes("FROM turnos t") ? sql.replace("UTC_TIMESTAMP(3)", "CAST('2030-01-02 01:30:00' AS DATETIME)") : sql,
+    values,
+  )) as typeof pool.query);
+  const result = await me(local, session.secret);
+  assert.equal(result.status, 200);
+  assert.deepEqual(json(result).proximosTurnos.map((turno: { id: number }) => turno.id), [upcoming, tomorrow]);
+  assert.ok(!json(result).proximosTurnos.some((turno: { id: number }) => turno.id === previous));
+});
+
+test("PET /me un fallo de consulta de turnos responde error, nunca lista vacía", async t => {
+  const local = await createLocal();
+  const client = await createClient(local);
+  const session = await createSession(local.id, client);
+  const original = pool.query.bind(pool);
+  t.mock.method(pool, "query", ((sql: string, values?: unknown[]) => {
+    if (sql.includes("FROM turnos t")) return Promise.reject(new Error("PRIVATE_SQL_SENTINEL"));
+    return original(sql, values);
+  }) as typeof pool.query);
+  const result = await me(local, session.secret);
+  assert.equal(result.status, 500);
+  assert.equal(result.noStore, true);
+  assert.ok(!result.body.includes("proximosTurnos"));
+  assert.ok(!result.body.includes("PRIVATE_SQL_SENTINEL"));
 });
 
 test("PET /me devuelve solo nombre y mascotas elegibles con orden estable", async () => {
@@ -154,6 +248,7 @@ test("PET /me devuelve solo nombre y mascotas elegibles con orden estable", asyn
   assert.deepEqual(json(result), {
     cliente: { nombre: "Ana" },
     mascotas: [{ id: alpha, nombre: "Alpha" }, { id: zeta, nombre: "Zeta" }],
+    proximosTurnos: [],
   });
   const rendered = JSON.stringify(json(result));
   for (const field of ["telefono", "telefono_normalizado", "localId", "clienteId", "sessionId",
@@ -173,7 +268,7 @@ test("PET /me devuelve mascotas [] si no hay elegibles; conserva cliente y sesi�
   await link(local, offline, client);
   const result = await me(local, session.secret);
   assert.equal(result.status, 200);
-  assert.deepEqual(json(result), { cliente: { nombre: "Ana" }, mascotas: [] });
+  assert.deepEqual(json(result), { cliente: { nombre: "Ana" }, mascotas: [], proximosTurnos: [] });
   const [stored] = await q<(RowDataPacket & { revoked_at: unknown })[]>(
     "SELECT revoked_at FROM pet_client_sessions WHERE id = ? AND local_id = ?", [session.id, local.id]);
   assert.equal(stored.revoked_at, null);
@@ -185,14 +280,14 @@ test("PET /me refleja inmediatamente mascota deshabilitada, baja lógica y vínc
   const session = await createSession(local.id, client);
   const pet = await createPet(local, "Rocky");
   await link(local, pet, client);
-  assert.deepEqual(json(await me(local, session.secret)), { cliente: { nombre: "Ana" }, mascotas: [{ id: pet, nombre: "Rocky" }] });
+  assert.deepEqual(json(await me(local, session.secret)), { cliente: { nombre: "Ana" }, mascotas: [{ id: pet, nombre: "Rocky" }], proximosTurnos: [] });
   await q("UPDATE mascotas SET reserva_online_habilitada = 0 WHERE id = ? AND local_id = ?", [pet, local.id]);
-  assert.deepEqual(json(await me(local, session.secret)), { cliente: { nombre: "Ana" }, mascotas: [] });
+  assert.deepEqual(json(await me(local, session.secret)), { cliente: { nombre: "Ana" }, mascotas: [], proximosTurnos: [] });
   await q("UPDATE mascotas SET reserva_online_habilitada = 1, activo = 0 WHERE id = ? AND local_id = ?", [pet, local.id]);
-  assert.deepEqual(json(await me(local, session.secret)), { cliente: { nombre: "Ana" }, mascotas: [] });
+  assert.deepEqual(json(await me(local, session.secret)), { cliente: { nombre: "Ana" }, mascotas: [], proximosTurnos: [] });
   await q("UPDATE mascotas SET activo = 1, reserva_online_habilitada = 1 WHERE id = ? AND local_id = ?", [pet, local.id]);
   await q("DELETE FROM mascota_clientes WHERE mascota_id = ? AND cliente_id = ? AND local_id = ?", [pet, client, local.id]);
-  assert.deepEqual(json(await me(local, session.secret)), { cliente: { nombre: "Ana" }, mascotas: [] });
+  assert.deepEqual(json(await me(local, session.secret)), { cliente: { nombre: "Ana" }, mascotas: [], proximosTurnos: [] });
 });
 
 test("PET /me mascota compartida aparece a cada responsable con vínculo M:N", async () => {
@@ -204,8 +299,8 @@ test("PET /me mascota compartida aparece a cada responsable con vínculo M:N", a
   const pet = await createPet(local, "Compartida");
   await link(local, pet, first);
   await link(local, pet, second);
-  assert.deepEqual(json(await me(local, firstSession.secret)), { cliente: { nombre: "Ana" }, mascotas: [{ id: pet, nombre: "Compartida" }] });
-  assert.deepEqual(json(await me(local, secondSession.secret)), { cliente: { nombre: "Bea" }, mascotas: [{ id: pet, nombre: "Compartida" }] });
+  assert.deepEqual(json(await me(local, firstSession.secret)), { cliente: { nombre: "Ana" }, mascotas: [{ id: pet, nombre: "Compartida" }], proximosTurnos: [] });
+  assert.deepEqual(json(await me(local, secondSession.secret)), { cliente: { nombre: "Bea" }, mascotas: [{ id: pet, nombre: "Compartida" }], proximosTurnos: [] });
 });
 
 test("PET /me rechaza expiración, revocación, slug distinto y tenant distinto", async () => {
@@ -324,7 +419,7 @@ test("PET me/logout no exponen Bearer, cliente ni mascotas en logs o respuestas 
   await link(local, pet, client);
   const meResult = await me(local, session.secret);
   assert.equal(meResult.noStore, true);
-  assert.deepEqual(json(meResult), { cliente: { nombre: "CLIENT_SENTINEL" }, mascotas: [{ id: pet, nombre: "PET_SENTINEL" }] });
+  assert.deepEqual(json(meResult), { cliente: { nombre: "CLIENT_SENTINEL" }, mascotas: [{ id: pet, nombre: "PET_SENTINEL" }], proximosTurnos: [] });
   const logoutResult = await logout(local.slug, session.secret);
   assert.equal(logoutResult.status, 204);
   const rendered = JSON.stringify(logs);

@@ -208,6 +208,14 @@ interface SessionContextRow extends RowDataPacket, PetSessionContext {}
 export interface PetSessionMe {
   cliente: { nombre: string };
   mascotas: Array<{ id: number; nombre: string }>;
+  proximosTurnos: Array<{
+    id: number;
+    mascota: { id: number; nombre: string };
+    fecha: string;
+    hora: string;
+    servicio: string;
+    estado: "activo";
+  }>;
 }
 
 interface PetSessionMeRow extends RowDataPacket {
@@ -252,7 +260,31 @@ export async function getPetSessionMe(context: PetSessionContext): Promise<PetSe
     if (row.mascotaId === null || row.mascotaNombre === null) continue;
     mascotas.push({ id: row.mascotaId, nombre: row.mascotaNombre });
   }
-  return { cliente: { nombre: rows[0].clienteNombre }, mascotas };
+  const [turnos] = await pool.query<(RowDataPacket & {
+    id: number; mascotaId: number; mascotaNombre: string; fecha: string;
+    hora: string; servicio: string; estado: "activo";
+  })[]>(
+    `SELECT t.id, m.id AS mascotaId, m.nombre AS mascotaNombre,
+            DATE_FORMAT(t.fecha, '%Y-%m-%d') AS fecha,
+            TIME_FORMAT(t.hora, '%H:%i') AS hora,
+            t.servicio_nombre_snapshot AS servicio, t.estado
+     FROM turnos t
+     JOIN mascotas m ON m.id = t.mascota_id AND m.local_id = t.local_id
+     JOIN mascota_clientes mc
+       ON mc.mascota_id = m.id AND mc.local_id = t.local_id AND mc.cliente_id = t.cliente_id
+     WHERE t.local_id = ? AND t.cliente_id = ? AND t.estado = 'activo'
+       AND m.activo = 1 AND m.reserva_online_habilitada = 1
+       AND TIMESTAMP(t.fecha, t.hora) >= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 3 HOUR)
+     ORDER BY t.fecha ASC, t.hora ASC, t.id ASC`,
+    [context.localId, context.clienteId],
+  );
+  return {
+    cliente: { nombre: rows[0].clienteNombre }, mascotas,
+    proximosTurnos: turnos.map(turno => ({
+      id: turno.id, mascota: { id: turno.mascotaId, nombre: turno.mascotaNombre },
+      fecha: turno.fecha, hora: turno.hora, servicio: turno.servicio, estado: turno.estado,
+    })),
+  };
 }
 
 export async function logoutPetPublicSession(slug: string, secret: string): Promise<void> {
