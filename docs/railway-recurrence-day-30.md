@@ -1,5 +1,43 @@
 # Railway manual checklist — RECURRENCE_DAY_30
 
+## Activación global — implementación local 2026-11-25
+
+El operador confirmó entrega real del piloto del local 8 con Evolution 2.3.7. El cambio
+global está validado localmente; Railway y su DB no fueron consultados desde esta sesión.
+Las secciones numeradas posteriores son **históricas**: sus referencias a allowlist vacía
+como apagado y a migraciones pendientes no son instrucciones para esta publicación.
+La migración operativa `20261120_001` figura aplicada por el operador en el registro
+`../../docs/pet-recurrencia-contactos.md`; este cambio global no agrega ni repite migraciones.
+
+Pasos manuales para el responsable:
+
+1. Antes de publicar, elegir el momento de activación. Si `PET_RECURRENCE_ENABLED` ya es
+   `true`, el despliegue del nuevo backend cambia inmediatamente el alcance a global.
+   Para preparar el despliegue sin envíos, ponerla en `false` y reiniciar los procesos.
+2. Publicar el backend que contiene el descubrimiento dinámico global. No requiere frontend,
+   cambios de esquema ni cargas/reinicializaciones de datos.
+3. Conservar `FRONTEND_URL` HTTPS del frontend productivo y la configuración Evolution que
+   funcionó en el piloto. Cada local debe tener conectada su propia instancia `String(local_id)`.
+4. Eliminar `PET_RECURRENCE_PILOT_LOCAL_IDS`: la nueva versión la ignora, incluso si vale `8`.
+   Su ausencia no apaga D30 y su presencia tampoco restringe los envíos.
+5. Establecer `PET_RECURRENCE_ENABLED=true` exacto y aplicar el reinicio/despliegue necesario
+   para que todos los procesos reciban la configuración. No modificar `PET_REMINDERS_ENABLED`.
+6. Revisar `PET recurrence scheduler registered` y, durante la ventana, las transiciones
+   `PET recurrence transition` por `localId`; errores de registro/ciclo no acreditan activación.
+   `sent` es aceptación del proveedor, no comprobante de entrega.
+
+Cron cada 5 minutos entre 10:00 y 11:55 ART; ventana `[10:00,12:00)`, sin corrida al registrar.
+Preferir preparación fuera de ventana. Puede enviar por turnos anteriores al despliegue que
+cumplan D30 **hoy**, pero no hace backlog D31+. Locales nuevos entran en el siguiente ciclo.
+`habilitada` sigue habilitando envíos **sin consentimiento verificado**; `baja` y ausencia de
+permiso excluyen. Presupuesto de 20 reclamos por ciclo/proceso compartido entre locales:
+al crecer el volumen puede haber omisiones al cerrar la ventana, sin catch-up posterior.
+
+Para detener trabajo nuevo: flag `false` y reinicio de todos los procesos. No borrar dedupe,
+historial o bajas, ni reabrir `unknown`; un POST ya iniciado no puede revocarse.
+
+## Registro histórico de migración y piloto (2026-11-19/20)
+
 **Registro operativo actualizado 2026-11-19.** El usuario confirmó que ejecutó manualmente
 la migración en Railway. Este documento registra el resultado reportado y conserva los
 pasos reproducibles de consulta/operación. No se accedió independientemente a Railway desde

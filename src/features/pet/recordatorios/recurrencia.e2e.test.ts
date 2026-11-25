@@ -35,7 +35,8 @@ test("E2E Docker: callback scheduler → MySQL → Evolution simulado → persis
   let outcome:"accepted"|"ambiguous"="accepted",dispatchCommitted=false;
   let afterDispatchCommit:(()=>void)|undefined;
   let result:Awaited<ReturnType<typeof runPetRecurrenceCycle>>|null=null;
-  const raw:PetRecurrenceEnvironment={flag:"true",pilotLocalIds:"",frontendUrl:frontend}; // in-memory, NOT process.env
+  const raw:PetRecurrenceEnvironment={flag:"true",frontendUrl:frontend}; // in-memory, NOT process.env
+  let currentFixtureLocal:number|null=null;
   const cycleErrors:unknown[][]=[];
   const originalError=console.error;
   t.mock.method(console,"error",(...args:unknown[])=>{
@@ -85,6 +86,8 @@ test("E2E Docker: callback scheduler → MySQL → Evolution simulado → persis
   const transport=createPetRecurrenceTransport(); // existing HTTP adapter, methods mocked above
   const actual=createPetRecurrenceDependencies(transport,db,coherentClock);
   const deps={...actual,
+    // Test containment: real discovery, processing restricted to this subtest's owned fixture.
+    listLocalIds:async()=>(await actual.listLocalIds()).filter(id=>id===currentFixtureLocal),
     page:async(local:number,cursor:number|null)=>{events.push({stage:"selection"});return actual.page(local,cursor);},
     claim:async(local:number,turno:number,url:string)=>{events.push({stage:"claim"});return actual.claim(local,turno,url);},
     process:async(...args:Parameters<typeof actual.process>)=>{events.push({stage:"process"});return actual.process(...args);},
@@ -120,7 +123,7 @@ test("E2E Docker: callback scheduler → MySQL → Evolution simulado → persis
   }
   async function ledger(f:Fixture){return rows("SELECT * FROM pet_recordatorios WHERE local_id=? ORDER BY id",[f.local]);}
   async function tick(f:Fixture,options:{ambiguous?:boolean;parallel?:boolean;afterCommit?:()=>void;real?:boolean}={}){
-    raw.pilotLocalIds=String(f.local);outcome=options.ambiguous?"ambiguous":"accepted";
+    currentFixtureLocal=f.local;outcome=options.ambiguous?"ambiguous":"accepted";
     mode=options.real?"real":"controlled";afterDispatchCommit=options.afterCommit;
     result=null;dispatchCommitted=false;events.length=0;posts.length=0;gets=0;
     const errors=cycleErrors.length;
@@ -131,7 +134,6 @@ test("E2E Docker: callback scheduler → MySQL → Evolution simulado → persis
   try{
     // Single registration with fake cron. This is a manual callback, never a live timer.
     let registrations=0;
-    const bootstrap=await fixture("none");raw.pilotLocalIds=String(bootstrap.local);
     assert.equal(startPetRecurrenceScheduler(()=>raw,(expression,cb,options)=>{
       registrations++;assert.equal(expression,"*/5 10-11 * * *");
       assert.equal(options.timezone,"America/Argentina/Buenos_Aires");callback=cb;return {stop(){}};

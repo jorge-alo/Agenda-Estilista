@@ -1,4 +1,30 @@
-# PET — RECURRENCE_DAY_30 (piloto, apagado por defecto)
+# PET — RECURRENCE_DAY_30 (SaaS global, apagado por defecto)
+
+## Estado actual — 2026-11-25
+
+Implementación global local, pendiente de publicación manual: `PET_RECURRENCE_ENABLED=true`
+y `FRONTEND_URL` válida habilitan el scheduler para todos los locales PET actuales y futuros.
+Cada ciclo descubre IDs `PET_GROOMING` ordenados desde `locales`; no usa ni interpreta
+`PET_RECURRENCE_PILOT_LOCAL_IDS`. Un entorno que ya tenga flag `true` se vuelve global al
+publicar esta versión, aunque conserve la antigua lista `8`.
+Se incluyen locales inactivos/vencidos en descubrimiento para recuperar reclamos stale;
+selección/reclamo/procesamiento siguen comprobando elegibilidad por local antes de enviar.
+Sin PET el ciclo termina; con flag apagada no hay descubrimiento ni DB/transporte.
+
+**Política operativa conservada por aprobación explícita:** `habilitada` y `autorizada`
+permiten D30 con coincidencia local/cliente/teléfono; `baja` y ausencia de fila excluyen.
+`habilitada` NO acredita consentimiento verificado y no se promueve automáticamente.
+La activación puede enviar por turnos previos al deploy si hoy cumplen D30 exacto; no
+recupera días vencidos. Cada mascota/ciclo es independiente, incluso con un mismo teléfono.
+El piloto del local 8 fue recibido mediante Evolution 2.3.7 según el operador; no se
+verificó Railway desde esta sesión. Pasos manuales en `railway-recurrence-day-30.md`.
+
+Verificación local focalizada: scheduler unitario/integración 25/25, fechas 5/5,
+preferencias 6/6 y E2E 8 subcasos PASS, 1 omitido porque el reloj real estaba dentro
+de la ventana (bordes fuera de ventana cubiertos con reloj simulado). TypeScript
+`npx tsc --noEmit` PASS. HTTP/cron reales bloqueados; fixtures Docker limpiados.
+
+### Antecedentes históricos (no describen el runtime global)
 
 Guía autocontenida del backend. Código de etapas 1–4 y E2E validado en Docker. La migración
 de contactos se aplicó manualmente también en Railway, pero el backend de `0f442` no está
@@ -30,23 +56,23 @@ ni sobrescribir bajas. Railway no fue modificado. Contrato actualizado detallado
   Sin precios/D35 ni promesa de disponibilidad semanal en el texto.
 - APPOINTMENT_REMINDER y BEAUTY mantienen sus reglas, schedulers y presupuestos.
 
-## Activación técnica (no autorizada por esta entrega)
+## Activación técnica (operación manual del responsable)
 
 | Variable | Condición |
 |---|---|
 | `PET_RECURRENCE_ENABLED` | Solo string exacto `true`; ausente u otro valor = apagado. |
-| `PET_RECURRENCE_PILOT_LOCAL_IDS` | CSV explícito de IDs INT positivos; vacío = cero actividad. Máximo 100 entradas. Un valor inválido invalida toda la lista. |
+| `PET_RECURRENCE_PILOT_LOCAL_IDS` | Obsoleta e ignorada; puede eliminarse tras publicar el backend global. No limita ni apaga D30. |
 | `FRONTEND_URL` | Base existente HTTPS sin credenciales, query ni fragment. No hay dominio alternativo por defecto. |
 
 El registro ocurre desde `server.ts` después de listen, únicamente con configuración
 válida. Cron `*/5 10-11 * * *` ART, sin corrida inmediata y con segundo guard de reloj
 MySQL UTC. Single-flight por proceso; UNIQUE/CAS coordinan workers y réplicas.
-Flag/lista/URL se revalidan durante el ciclo y antes del POST. Cambiar variables de
+Flag/URL se revalidan durante el ciclo y antes del POST. Cambiar variables de
 despliegue requiere reiniciar el proceso; no es un kill switch distribuido instantáneo.
 
 Presupuesto independiente: 20 reclamos ganados por corrida, páginas keyset de 50,
-round-robin/rotación entre locales y recuperación de hasta 100 claims por local piloto.
-Un local diferido no impide avanzar a otros. No se selecciona ni recupera fuera de la lista.
+round-robin/rotación entre locales y recuperación de hasta 100 claims por local PET descubierto.
+Un local diferido no impide avanzar a otros. El límite es por corrida/proceso, no por local.
 El transporte delega a las funciones PET existentes `getPetWhatsAppConnectionState`
 y `sendPetWhatsAppWithReceipt`, instancia `String(local_id)`.
 
@@ -145,11 +171,10 @@ cero residuos. AUTO_INCREMENT avanza por fixtures, sin reiniciarlo. Sin HTTP ext
 
 ## Pendientes antes de producción
 
-Confirmar migraciones previas requeridas por el backend antes de publicarlo. La migración
-de contactos Railway está aplicada, pero no acredita la publicación del backend. Obtener
-aprobación separada para el despliegue. Definir/verificar cohorte, IDs piloto, evidencia y responsable de bajas;
-aprobar la operación productiva (los CLI actuales son solo locales). Validar URL/instancia
-Evolution y entrega bajo autorización. Después evaluar activación explícita de flag/lista.
+Publicación y configuración Railway a cargo del operador. Este cambio no requiere migración
+ni reinicializar contactos/historial/recordatorios. Confirmar la versión desplegada y revisar
+flag/URL/operación de bajas; los CLI actuales siguen siendo solo locales. Con flag `true`,
+todos los locales PET descubiertos participan sujetos a sus permisos y elegibilidad.
 No hay panel ni procesamiento automático de respuestas de baja.
 Para detener trabajo nuevo se deshabilita la función y se reinician los procesos afectados;
 no borrar tablas, dedupe ni bajas, ni reabrir unknown para reintentar automáticamente.

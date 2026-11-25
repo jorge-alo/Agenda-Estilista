@@ -1,44 +1,55 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parsePetRecurrenceConfig,runPetRecurrenceCycle,startPetRecurrenceScheduler,
+import { parsePetRecurrenceConfig,readPetRecurrenceEnvironment,runPetRecurrenceCycle,startPetRecurrenceScheduler,
   PET_RECURRENCE_BATCH_SIZE,PET_RECURRENCE_CRON,PET_RECURRENCE_TIMEZONE,
   type PetRecurrenceCycleDependencies,type PetRecurrenceEnvironment } from "./recurrencia.scheduler";
 import { createPetRecurrenceTransport } from "./recurrencia.transport";
 import { getPetWhatsAppConnectionState,sendPetWhatsAppWithReceipt } from "../../notifications/infrastructure/whatsapp.provider";
 import { evolutionClient } from "../../notifications/infrastructure/evolution.client";
 
-const config=(ids="1"):PetRecurrenceEnvironment=>({flag:"true",pilotLocalIds:ids,frontendUrl:"https://example.test/"});
+const config=():PetRecurrenceEnvironment=>({flag:"true",frontendUrl:"https://example.test/"});
 const at="2026-11-19T13:00:00.000Z";
 function owner(localId:number,turnoId:number){return {id:turnoId,localId,ultimoTurnoId:turnoId,mascotaId:turnoId,clienteId:1,claimKey:"2026-11-19 13:00:00.000000"};}
 function dependencies():PetRecurrenceCycleDependencies {
-  return {now:async()=>new Date(at),recover:async()=>({pending:0,skipped:0,unknown:0}),
+  return {now:async()=>new Date(at),listLocalIds:async()=>[1],recover:async()=>({pending:0,skipped:0,unknown:0}),
     page:async()=>({candidatos:[],cursor:null,hayMas:false}),claim:async(local,id)=>owner(local,id),process:async()=>"sent"};
 }
 
-test("flag estricta y allowlist vacía: cero DB/procesamiento y cero registro",async()=>{
+test("flag estricta: cero DB/procesamiento y cero registro cuando está apagada",async()=>{
   const deps=dependencies();deps.now=async()=>assert.fail("disabled must not access DB");
+  deps.listLocalIds=async()=>assert.fail("disabled must not discover tenants");
   for(const flag of [undefined,"","false","TRUE","1","yes"]) {
     const raw={...config(),flag};
     assert.equal(parsePetRecurrenceConfig(raw),null);
     assert.equal((await runPetRecurrenceCycle(()=>raw,deps)).claimed,0);
     assert.equal(startPetRecurrenceScheduler(()=>raw,()=>assert.fail("no timer")),false);
   }
-  for(const pilotLocalIds of [undefined,"","   "]) {
-    const raw={...config(),pilotLocalIds};
-    assert.equal((await runPetRecurrenceCycle(()=>raw,deps)).claimed,0);
-    assert.equal(startPetRecurrenceScheduler(()=>raw,()=>assert.fail("no timer")),false);
+});
+
+test("variable piloto ausente, vacía o inválida ya no afecta la configuración global",async(t)=>{
+  // Mock only the legacy property: never load an environment file.
+  const previous=process.env.PET_RECURRENCE_PILOT_LOCAL_IDS;
+  t.after(()=>{if(previous===undefined)delete process.env.PET_RECURRENCE_PILOT_LOCAL_IDS;else process.env.PET_RECURRENCE_PILOT_LOCAL_IDS=previous;});
+  for(const legacy of [undefined,"","8","invalid"]) {
+    if(legacy===undefined)delete process.env.PET_RECURRENCE_PILOT_LOCAL_IDS;else process.env.PET_RECURRENCE_PILOT_LOCAL_IDS=legacy;
+    assert.equal("pilotLocalIds" in readPetRecurrenceEnvironment(),false);
+    const raw={...config(),pilotLocalIds:legacy};
+    assert.deepEqual(parsePetRecurrenceConfig(raw),{frontendUrl:"https://example.test"});
+    const deps=dependencies();deps.listLocalIds=async()=>[12];
+    deps.page=async localId=>({candidatos:[{localId,turnoId:1}],cursor:1,hayMas:false});
+    assert.equal((await runPetRecurrenceCycle(()=>raw,deps)).claimed,1);
   }
 });
 
-test("allowlist solo IDs INT positivos explícitos; error en una entrada invalida toda la configuración",async(t)=>{
-  assert.deepEqual(parsePetRecurrenceConfig(config(" 2,1,2 "))?.localIds,[2,1]);
-  const logs:unknown[][]=[];t.mock.method(console,"error",(...args:unknown[])=>logs.push(args));
-  for(const list of ["0","-1","01","1,","1,,2","1.5","1e2","2147483648","1,secret-value",Array(101).fill("1").join(",")]) {
-    assert.throws(()=>parsePetRecurrenceConfig(config(list)));
-    await assert.rejects(runPetRecurrenceCycle(()=>config(list),dependencies()));
-    assert.equal(startPetRecurrenceScheduler(()=>config(list),()=>assert.fail("invalid cannot register")),false);
-  }
-  assert.ok(!JSON.stringify(logs).includes("secret-value"));
+test("sin locales termina; un nuevo PET se descubre en el siguiente ciclo sin reinicio",async()=>{
+  const deps=dependencies(),recovered:number[]=[];let ids:number[]=[];
+  deps.listLocalIds=async()=>[...ids];
+  deps.recover=async id=>{recovered.push(id);return {pending:0,skipped:0,unknown:0};};
+  deps.page=async id=>({candidatos:[{localId:id,turnoId:id}],cursor:id,hayMas:false});
+  assert.equal((await runPetRecurrenceCycle(()=>config(),deps)).claimed,0);
+  ids=[8];assert.equal((await runPetRecurrenceCycle(()=>config(),deps)).claimed,1);
+  ids=[8,12];assert.equal((await runPetRecurrenceCycle(()=>config(),deps)).claimed,2);
+  assert.deepEqual(recovered,[8,8,12]);
 });
 
 test("URL pública inválida no se convierte en dominio por defecto ni permite registro",()=>{
@@ -50,6 +61,7 @@ test("URL pública inválida no se convierte en dominio por defecto ni permite r
 test("fuera de [10,12) no hay recovery, selección ni procesamiento",async()=>{
   for(const instant of ["2026-11-19T12:59:59.999Z","2026-11-19T15:00:00.000Z"]) {
     const deps=dependencies();deps.now=async()=>new Date(instant);
+    deps.listLocalIds=async()=>assert.fail("no discovery outside window");
     deps.recover=async()=>assert.fail("no recovery outside window");
     deps.page=async()=>assert.fail("no page outside window");
     assert.equal((await runPetRecurrenceCycle(()=>config(),deps)).claimed,0);
@@ -70,21 +82,22 @@ test("recovery antes de páginas; keyset avanza por 50 excluidos hasta un candid
 
 test("presupuesto propio de 20 reclamos, round-robin y rotación entre más de 20 locales",async()=>{
   const deps=dependencies(),claims:number[]=[];
-  const ids=Array.from({length:25},(_,i)=>i+1).join(",");
+  deps.listLocalIds=async()=>Array.from({length:25},(_,i)=>i+1);
   deps.page=async id=>({candidatos:[{localId:id,turnoId:id}],cursor:id,hayMas:false});
   deps.claim=async(id,turno)=>{claims.push(id);return owner(id,turno);};
-  const first=await runPetRecurrenceCycle(()=>config(ids),deps);
+  const first=await runPetRecurrenceCycle(()=>config(),deps);
   assert.equal(first.claimed,PET_RECURRENCE_BATCH_SIZE);assert.equal(first.nextOffset,20);
-  const second=await runPetRecurrenceCycle(()=>config(ids),deps,first.nextOffset);
+  const second=await runPetRecurrenceCycle(()=>config(),deps,first.nextOffset);
   assert.equal(second.claimed,20);assert.equal(new Set(claims).size,25);
   assert.deepEqual(claims.slice(20,25),[21,22,23,24,25]);
 });
 
 test("pending difiere solo ese local; el siguiente conserva su presupuesto",async()=>{
   const deps=dependencies(),processed:number[]=[];
+  deps.listLocalIds=async()=>[1,2];
   deps.page=async id=>({candidatos:Array.from({length:30},(_,i)=>({localId:id,turnoId:id*100+i})),cursor:1000,hayMas:false});
   deps.process=async work=>{processed.push(work.localId);return work.localId===1?"pending":"sent";};
-  const result=await runPetRecurrenceCycle(()=>config("1,2"),deps);
+  const result=await runPetRecurrenceCycle(()=>config(),deps);
   assert.equal(result.claimed,20);assert.equal(processed.filter(id=>id===1).length,1);
   assert.equal(processed.filter(id=>id===2).length,19);
 });
@@ -108,12 +121,12 @@ test("candidatos/claims de otro local se rechazan antes de process",async()=>{
   assert.deepEqual(claimed,[1]);assert.equal(result.itemErrors,2);
 });
 
-test("flag/allowlist se revalidan al cambiar durante el ciclo",async()=>{
-  for(const removed of [true,false]) {
+test("flag/URL se revalidan al cambiar durante el ciclo",async()=>{
+  for(const changedUrl of [true,false]) {
     const raw=config(),deps=dependencies();
-    deps.page=async id=>{if(removed)raw.pilotLocalIds="";else raw.flag="false";
+    deps.page=async id=>{if(changedUrl)raw.frontendUrl="https://changed.test";else raw.flag="false";
       return {candidatos:[{localId:id,turnoId:1}],cursor:1,hayMas:false};};
-    deps.claim=async()=>assert.fail("disabled cohort cannot claim");
+    deps.claim=async()=>assert.fail("disabled configuration cannot claim");
     assert.equal((await runPetRecurrenceCycle(()=>raw,deps)).claimed,0);
   }
 });
@@ -166,11 +179,9 @@ test("registro simulado: cron ART exclusivo, sin ejecución inicial, single-flig
   assert.equal(cycles,0);assert.equal(schedules,1);
   instant="2026-11-19T15:00:00.000Z";await callback();assert.equal(cycles,0);
   instant=at;raw.flag="false";await callback();assert.equal(cycles,0);
-  raw.flag="true";raw.pilotLocalIds="";await callback();assert.equal(cycles,0);
-  raw.pilotLocalIds="1";const first=callback();await entered;await callback();assert.equal(cycles,1);
+  raw.flag="true";const first=callback();await entered;await callback();assert.equal(cycles,1);
   release();await first;
-  raw.pilotLocalIds="private-invalid";await callback();assert.ok(!JSON.stringify(logs).includes("private-invalid"));
-  raw.pilotLocalIds="1";fail=true;await callback();assert.equal(cycles,2);
+  fail=true;await callback();assert.equal(cycles,2);
   assert.ok(!JSON.stringify(logs).includes("private-cycle-error"));
   fail=false;await callback();assert.equal(cycles,3,"failure releases the single-flight guard");
   assert.equal(startPetRecurrenceScheduler(()=>raw,schedule),true);assert.equal(schedules,1);

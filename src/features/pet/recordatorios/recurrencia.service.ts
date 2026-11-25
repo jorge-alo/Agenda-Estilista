@@ -161,6 +161,14 @@ export async function evaluarCicloRecurrenciaPet(
   return { row, motivo };
 }
 
+/** Tenant discovery only. Include inactive/expired PET locals so recovery can close stale claims.
+ * Selection/claim/process still revalidate complete send eligibility within each tenant. */
+export async function listarLocalesRecurrenciaPet(db:Pick<Pool,"query">=pool):Promise<number[]> {
+  const [rows]=await db.query<(RowDataPacket & {id:number})[]>(
+    "SELECT id FROM locales WHERE business_type = 'PET_GROOMING' ORDER BY id");
+  return rows.map(row=>row.id);
+}
+
 export interface PaginaRecurrenciaPet {
   candidatos: {localId:number;turnoId:number}[];
   cursor: number|null;

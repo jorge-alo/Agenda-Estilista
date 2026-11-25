@@ -4,7 +4,7 @@ import { pool } from "../../../config/db";
 import { validatePetFrontendUrl } from "../session/session.link";
 import { relojMysqlRecordatorioPet, type RelojRecordatorioPet } from "./recordatorios.service";
 import { contextoRecurrenciaPet } from "./recurrencia.time";
-import { seleccionarPaginaRecurrenciaPet, type PaginaRecurrenciaPet } from "./recurrencia.service";
+import { listarLocalesRecurrenciaPet, seleccionarPaginaRecurrenciaPet, type PaginaRecurrenciaPet } from "./recurrencia.service";
 import { reclamarRecurrenciaPet, procesarRecurrenciaPet, recuperarRecurrenciaPet,
   type ProveedorRecurrenciaPet, type ReclamoRecurrenciaPet } from "./recurrencia.processing";
 import { createPetRecurrenceTransport } from "./recurrencia.transport";
@@ -12,22 +12,17 @@ import { createPetRecurrenceTransport } from "./recurrencia.transport";
 export const PET_RECURRENCE_CRON="*/5 10-11 * * *";
 export const PET_RECURRENCE_TIMEZONE="America/Argentina/Buenos_Aires";
 export const PET_RECURRENCE_BATCH_SIZE=20;
-export interface PetRecurrenceEnvironment {flag?:string;pilotLocalIds?:string;frontendUrl?:string}
+export interface PetRecurrenceEnvironment {flag?:string;frontendUrl?:string}
 export type PetRecurrenceConfigSource=()=>PetRecurrenceEnvironment;
 export function readPetRecurrenceEnvironment():PetRecurrenceEnvironment {
-  return {flag:process.env.PET_RECURRENCE_ENABLED,pilotLocalIds:process.env.PET_RECURRENCE_PILOT_LOCAL_IDS,
-    frontendUrl:process.env.FRONTEND_URL};
+  return {flag:process.env.PET_RECURRENCE_ENABLED,frontendUrl:process.env.FRONTEND_URL};
 }
 export function parsePetRecurrenceConfig(raw:PetRecurrenceEnvironment) {
   if(raw.flag!=="true")return null;
-  if(!raw.pilotLocalIds?.trim())return null;
-  const parts=raw.pilotLocalIds.split(",").map(value=>value.trim());
-  if(parts.length>100 || parts.some(value=>!/^[1-9]\d*$/.test(value)
-    || !Number.isSafeInteger(Number(value)) || Number(value)>2147483647))throw new Error("PET_RECURRENCE_ALLOWLIST_INVALID");
-  return {localIds:[...new Set(parts.map(Number))],frontendUrl:validatePetFrontendUrl(raw.frontendUrl,"production")};
+  return {frontendUrl:validatePetFrontendUrl(raw.frontendUrl,"production")};
 }
-function allowed(source:PetRecurrenceConfigSource,localId:number,base:string):boolean {
-  try {const config=parsePetRecurrenceConfig(source());return !!config && config.frontendUrl===base && config.localIds.includes(localId);}
+function allowed(source:PetRecurrenceConfigSource,base:string):boolean {
+  try {const config=parsePetRecurrenceConfig(source());return !!config && config.frontendUrl===base;}
   catch{return false;}
 }
 type Recovery=Awaited<ReturnType<typeof recuperarRecurrenciaPet>>;
@@ -37,6 +32,7 @@ async function mysqlNow() {
 }
 export interface PetRecurrenceCycleDependencies {
   now():Promise<Date>;
+  listLocalIds():Promise<number[]>;
   recover(localId:number,frontendUrl:string):Promise<Recovery>;
   page(localId:number,cursor:number|null):Promise<PaginaRecurrenciaPet>;
   claim(localId:number,turnoId:number,frontendUrl:string):Promise<ReclamoRecurrenciaPet|null>;
@@ -48,6 +44,7 @@ export function createPetRecurrenceDependencies(
 ):PetRecurrenceCycleDependencies {
   return {
     now:async()=>{const tx=await db.getConnection();try{return await reloj(tx);}finally{tx.release();}},
+    listLocalIds:()=>listarLocalesRecurrenciaPet(db),
     recover:(localId,frontendUrl)=>recuperarRecurrenciaPet({localId,frontendUrl},db,reloj),
     page:(localId,cursor)=>seleccionarPaginaRecurrenciaPet(localId,cursor,db,reloj),
     claim:(localId,turnoId,url)=>reclamarRecurrenciaPet(localId,turnoId,url,db,reloj),
@@ -68,26 +65,28 @@ export async function runPetRecurrenceCycle(
 ) {
   const result={claimed:0,itemErrors:0,recovered:{pending:0,skipped:0,unknown:0},nextOffset:startOffset};
   const config=parsePetRecurrenceConfig(source());
-  if(!config)return result; // No DB, recovery, provider or dependency factory while disabled/empty.
+  if(!config)return result; // No DB, recovery, provider or dependency factory while disabled.
   const deps=injected??createPetRecurrenceDependencies();
   const context=contextoRecurrenciaPet(await deps.now());
   if(!context.enVentana)return result;
-  const offset=((startOffset%config.localIds.length)+config.localIds.length)%config.localIds.length;
-  const ids=[...config.localIds.slice(offset),...config.localIds.slice(0,offset)];
+  const localIds=await deps.listLocalIds();
+  if(!localIds.length)return result;
+  const offset=((startOffset%localIds.length)+localIds.length)%localIds.length;
+  const ids=[...localIds.slice(offset),...localIds.slice(0,offset)];
   const states=ids.map(localId=>({localId,cursor:null as number|null,queue:[] as PaginaRecurrenciaPet["candidatos"],done:false,recovered:false,more:true}));
   const inWindow=async()=>{const now=contextoRecurrenciaPet(await deps.now());return now.enVentana && now.hoyArgentina===context.hoyArgentina;};
   cycle: while(result.claimed<PET_RECURRENCE_BATCH_SIZE && states.some(state=>!state.done)) {
     for(const state of states) {
       if(state.done)continue;
-      if(!allowed(source,state.localId,config.frontendUrl)){state.done=true;continue;}
+      if(!allowed(source,config.frontendUrl)){state.done=true;continue;}
       if(!await inWindow())break cycle;
-      result.nextOffset=(config.localIds.indexOf(state.localId)+1)%config.localIds.length;
+      result.nextOffset=(localIds.indexOf(state.localId)+1)%localIds.length;
       if(!state.recovered) {
         const recovered=await deps.recover(state.localId,config.frontendUrl);
         for(const key of ["pending","skipped","unknown"] as const)result.recovered[key]+=recovered[key];
         state.recovered=true;
       }
-      if(!allowed(source,state.localId,config.frontendUrl)){state.done=true;continue;}
+      if(!allowed(source,config.frontendUrl)){state.done=true;continue;}
       if(!await inWindow())break cycle;
       if(!state.queue.length) {
         if(!state.more){state.done=true;continue;}
@@ -99,7 +98,7 @@ export async function runPetRecurrenceCycle(
       }
       const candidate=state.queue.shift()!;
       if(candidate.localId!==state.localId){result.itemErrors++;continue;}
-      if(!allowed(source,state.localId,config.frontendUrl)){state.done=true;continue;}
+      if(!allowed(source,config.frontendUrl)){state.done=true;continue;}
       if(!await inWindow())break cycle;
       try {
         const owner=await deps.claim(state.localId,candidate.turnoId,config.frontendUrl);
@@ -107,10 +106,10 @@ export async function runPetRecurrenceCycle(
         result.claimed++;
         if(owner.localId!==state.localId || owner.ultimoTurnoId!==candidate.turnoId) {
           result.itemErrors++;
-        } else if(!allowed(source,state.localId,config.frontendUrl) || !await inWindow()) {
+        } else if(!allowed(source,config.frontendUrl) || !await inWindow()) {
           // No processing; before HTTP, the lease remains safely recoverable.
           break cycle;
-        } else if(await deps.process(owner,config.frontendUrl,()=>allowed(source,state.localId,config.frontendUrl))==="pending") {
+        } else if(await deps.process(owner,config.frontendUrl,()=>allowed(source,config.frontendUrl))==="pending") {
           state.done=true; // Probe disconnected/deferred local once, leave other tenants a turn.
         }
       } catch(error) {
@@ -127,7 +126,7 @@ export async function runPetRecurrenceCycle(
 type RegisterSchedule=(expression:string,callback:()=>Promise<void>,options:{timezone:string})=>{stop():void};
 let registered:ReturnType<RegisterSchedule>|null=null;
 
-/** Registers only: never immediately executes, and default flag/allowlist are both closed. */
+/** Registers only: never immediately executes, and the global flag is closed by default. */
 export function startPetRecurrenceScheduler(
   source:PetRecurrenceConfigSource=readPetRecurrenceEnvironment,
   schedule:RegisterSchedule=cron.schedule,
